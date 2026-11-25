@@ -2,7 +2,10 @@ import { describe, expect, it } from "vitest";
 import {
   attachmentDownloadPath,
   attachmentIdFromDownloadURL,
+  attachmentMatchesProtocolURL,
   contentReferencesAttachment,
+  maskMarkdownCode,
+  parseAttachmentProtocolTarget,
   stripChannelMediaMarkers,
 } from "./attachment-url";
 
@@ -153,5 +156,68 @@ describe("contentReferencesAttachment", () => {
     // `md.includes(a.url)` check would have returned false here.
     expect(md.includes(att.url)).toBe(false);
     expect(contentReferencesAttachment(md, att)).toBe(true);
+  });
+
+  it("matches non-code attachment://<filename> and attachment://<id> refs", () => {
+    const withFilename = { ...att, filename: "foo.png" };
+    expect(contentReferencesAttachment("![shot](attachment://foo.png)", withFilename)).toBe(true);
+    expect(contentReferencesAttachment("![shot](attachment://./dir/foo.png?v=1#top)", withFilename)).toBe(true);
+    expect(contentReferencesAttachment(`![shot](attachment://${ID})`, withFilename)).toBe(true);
+    expect(contentReferencesAttachment("!file[foo.png](attachment://foo.png)", withFilename)).toBe(true);
+    expect(contentReferencesAttachment('<img src="attachment://foo.png">', withFilename)).toBe(true);
+    expect(contentReferencesAttachment("![shot](attachment://my%20shot.png)", { ...att, filename: "my shot.png" })).toBe(true);
+  });
+
+  it("does NOT trigger dedup when attachment://foo.png appears only inside inline code or fenced blocks", () => {
+    const withFilename = { ...att, filename: "foo.png" };
+    expect(contentReferencesAttachment("Use `attachment://foo.png` as placeholder.", withFilename)).toBe(false);
+    expect(contentReferencesAttachment("Example: `![alt](attachment://foo.png)`", withFilename)).toBe(false);
+    expect(contentReferencesAttachment("Double: `` `![alt](attachment://foo.png)` ``", withFilename)).toBe(false);
+    expect(
+      contentReferencesAttachment(
+        ["```md", "![alt](attachment://foo.png)", "!file[foo.png](attachment://foo.png)", "```"].join("\n"),
+        withFilename,
+      ),
+    ).toBe(false);
+    expect(contentReferencesAttachment("Mentioned attachment://foo.png in prose only.", withFilename)).toBe(false);
+  });
+});
+
+describe("parseAttachmentProtocolTarget & maskMarkdownCode", () => {
+  it("parses UUID, filename, relative paths, and query/fragment", () => {
+    expect(parseAttachmentProtocolTarget(`attachment://${ID}?v=2#frag`)).toEqual({
+      id: ID.toLowerCase(),
+      filename: ID.toLowerCase(),
+      rawTarget: ID.toLowerCase(),
+    });
+    expect(parseAttachmentProtocolTarget("attachment://./shots/my%20file.png?x=1")).toEqual({
+      id: undefined,
+      filename: "my file.png",
+      rawTarget: "shots/my file.png",
+    });
+  });
+
+  it("rejects empty targets, traversal segments, and malformed non-attachment schemes", () => {
+    expect(parseAttachmentProtocolTarget("attachment://")).toBeUndefined();
+    expect(parseAttachmentProtocolTarget("attachment://../secret.png")).toBeUndefined();
+    expect(parseAttachmentProtocolTarget("https://example.com/a.png")).toBeUndefined();
+    expect(parseAttachmentProtocolTarget("attachment://%E0%A4%A.png")).toEqual({
+      id: undefined,
+      filename: "%E0%A4%A.png",
+      rawTarget: "%E0%A4%A.png",
+    });
+  });
+
+  it("matches by id first, then normalized filename/basename", () => {
+    expect(attachmentMatchesProtocolURL(`attachment://${ID}`, { id: ID, filename: "other.png" })).toBe(true);
+    expect(attachmentMatchesProtocolURL("attachment://./a/shot.png", { id: ID, filename: "shot.png" })).toBe(true);
+    expect(attachmentMatchesProtocolURL("attachment://other.png", { id: ID, filename: "shot.png" })).toBe(false);
+  });
+
+  it("blanks fenced blocks and multi-backtick spans without dropping newlines", () => {
+    const src = "line1\n```ts\n![a](attachment://foo.png)\n```\nline5 `` `![b](attachment://foo.png)` ``";
+    const masked = maskMarkdownCode(src);
+    expect(masked.split("\n").length).toBe(src.split("\n").length);
+    expect(masked).not.toContain("attachment://");
   });
 });

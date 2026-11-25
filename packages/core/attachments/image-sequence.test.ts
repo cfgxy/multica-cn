@@ -73,6 +73,14 @@ describe("matchAttachmentByURL", () => {
   it("returns undefined for unrelated URLs", () => {
     expect(matchAttachmentByURL("https://example.com/x.png", [a])).toBeUndefined();
   });
+
+  it("resolves attachment://<id> and attachment://<filename> with ID priority", () => {
+    const first = attachment({ id: UUID_A, filename: "same.png" });
+    const second = attachment({ id: UUID_B, filename: "same.png" });
+    expect(matchAttachmentByURL(`attachment://${UUID_B}`, [first, second])).toBe(second);
+    expect(matchAttachmentByURL("attachment://./shots/same.png?v=1", [first, second])).toBe(first);
+    expect(matchAttachmentByURL("attachment://missing.png", [first, second])).toBeUndefined();
+  });
 });
 
 describe("selectStandaloneAttachments", () => {
@@ -95,6 +103,17 @@ describe("selectStandaloneAttachments", () => {
   it("keeps everything when there is no content", () => {
     const a = attachment({ id: UUID_A });
     expect(selectStandaloneAttachments("", [a])).toEqual([a]);
+  });
+
+  it("drops attachment:// refs in body prose but preserves attachments only quoted in code", () => {
+    const inline = attachment({ id: UUID_A, filename: "inline.png" });
+    const quoted = attachment({ id: UUID_B, filename: "quoted.png" });
+    const content = [
+      "![inline](attachment://inline.png)",
+      "",
+      "Example in code: `![quoted](attachment://quoted.png)`",
+    ].join("\n");
+    expect(selectStandaloneAttachments(content, [inline, quoted]).map((a) => a.id)).toEqual([UUID_B]);
   });
 });
 
@@ -201,6 +220,19 @@ describe("collectImageSequence", () => {
   it("returns an empty sequence for empty input", () => {
     expect(collectImageSequence([])).toEqual([]);
     expect(collectImageSequence([null, undefined, {}])).toEqual([]);
+  });
+
+  it("resolves cross-comment attachment:// refs via fallbackAttachments without duplicating standalone cards", () => {
+    const earlier = attachment({ id: UUID_A, filename: "earlier.png" });
+    const sequence = collectImageSequence([
+      {
+        content: "![cross](attachment://earlier.png)\n\n![broken](attachment://missing.png)",
+        attachments: [],
+        fallbackAttachments: [earlier],
+      },
+    ]);
+    expect(sequence.map((i) => i.key)).toEqual([UUID_A]);
+    expect(sequence[0]?.attachment).toBe(earlier);
   });
 });
 

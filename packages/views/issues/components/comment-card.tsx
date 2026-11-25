@@ -1,6 +1,6 @@
 "use client";
 
-import { memo, useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { CheckCircle2, ChevronRight, ListChevronsDownUp, Copy, Loader2, MessageSquarePlus, MoreHorizontal, Pencil, RotateCcw, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import { Card } from "@multica/ui/components/ui/card";
@@ -102,6 +102,8 @@ interface CommentCardProps {
   issueId: string;
   issue?: Issue;
   entry: TimelineEntry;
+  /** Issue-level attachments used as a fallback pool when resolving cross-comment `attachment://` refs. */
+  issueAttachments?: Attachment[];
   credentialDelivered?: boolean;
   credentialRequestAvailable?: boolean;
   /**
@@ -187,6 +189,18 @@ function DeleteCommentDialog({
 // ---------------------------------------------------------------------------
 // Standalone attachment list — renders attachments not already in the markdown
 // ---------------------------------------------------------------------------
+
+function mergeAttachmentsForContent(
+  ownAttachments?: Attachment[],
+  issueAttachments?: Attachment[],
+): Attachment[] | undefined {
+  if (!issueAttachments?.length) return ownAttachments;
+  if (!ownAttachments?.length) return issueAttachments;
+  const ownIds = new Set(ownAttachments.map((a) => a.id));
+  const extra = issueAttachments.filter((a) => !ownIds.has(a.id));
+  if (extra.length === 0) return ownAttachments;
+  return [...ownAttachments, ...extra];
+}
 
 export function AttachmentList({
   attachments,
@@ -604,6 +618,7 @@ function CommentRevisionConflict({
 function CommentRow({
   issueId,
   entry,
+  issueAttachments,
   currentUserId,
   canModerate = false,
   isResolution = false,
@@ -616,6 +631,7 @@ function CommentRow({
 }: {
   issueId: string;
   entry: TimelineEntry;
+  issueAttachments?: Attachment[];
   currentUserId?: string;
   canModerate?: boolean;
   /** True when this reply is the thread's resolution (shows the green badge). */
@@ -634,6 +650,10 @@ function CommentRow({
   const { getActorName } = useActorName();
 
   const edit = useEditAttachmentState(issueId, entry, onEdit);
+  const contentAttachments = useMemo(
+    () => mergeAttachmentsForContent(entry.attachments, issueAttachments),
+    [entry.attachments, issueAttachments],
+  );
 
   const isOwn = entry.actor_type === "member" && entry.actor_id === currentUserId;
   const canEditEntry = isOwn || (canModerate && entry.actor_type === "member");
@@ -840,7 +860,7 @@ function CommentRow({
       ) : (
         <>
           <div className="pl-12 pr-4 max-md:pl-3 max-md:pr-3 pt-1 text-body leading-relaxed text-foreground">
-            <ReadonlyContent content={entry.content ?? ""} attachments={entry.attachments} />
+            <ReadonlyContent content={entry.content ?? ""} attachments={contentAttachments} />
           </div>
           <AttachmentList attachments={entry.attachments} content={entry.content} className="mt-1.5 pl-12 pr-4 max-md:pl-3 max-md:pr-3" />
           {retryableAgentFailureComment(entry) && (
@@ -878,6 +898,7 @@ function CommentCardImpl({
   issueId,
   issue,
   entry,
+  issueAttachments,
   credentialDelivered = false,
   credentialRequestAvailable = true,
   replies,
@@ -908,6 +929,10 @@ function CommentCardImpl({
   );
 
   const edit = useEditAttachmentState(issueId, entry, onEdit);
+  const contentAttachments = useMemo(
+    () => mergeAttachmentsForContent(entry.attachments, issueAttachments),
+    [entry.attachments, issueAttachments],
+  );
 
   const isOwn = entry.actor_type === "member" && entry.actor_id === currentUserId;
   const canEditEntry = isOwn || (canModerate && entry.actor_type === "member");
@@ -1203,7 +1228,7 @@ function CommentCardImpl({
             ) : (
               <>
                 <div className="pl-10 max-md:pl-0 text-body leading-relaxed text-foreground">
-                  <ReadonlyContent content={entry.content ?? ""} attachments={entry.attachments} />
+                  <ReadonlyContent content={entry.content ?? ""} attachments={contentAttachments} />
                 </div>
                 <AttachmentList attachments={entry.attachments} content={entry.content} className="mt-1.5 pl-10 max-md:pl-0" />
                 {isCredentialRequest && issue && (credentialDelivered || credentialRequestAvailable) ? (
@@ -1262,6 +1287,7 @@ function CommentCardImpl({
                   <CommentRow
                     issueId={issueId}
                     entry={resolutionReply}
+                    issueAttachments={issueAttachments}
                     currentUserId={currentUserId}
                     canModerate={canModerate}
                     isResolution
@@ -1302,6 +1328,7 @@ function CommentCardImpl({
                   <CommentRow
                     issueId={issueId}
                     entry={reply}
+                    issueAttachments={issueAttachments}
                     currentUserId={currentUserId}
                     canModerate={canModerate}
                     isResolution={reply.id === replyResolutionId}

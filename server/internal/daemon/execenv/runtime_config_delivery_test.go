@@ -86,12 +86,18 @@ func TestBriefSurfaceDeliveryPolicy(t *testing.T) {
 	}{
 		// Issue surfaces: files ride the comment.
 		"comment": {
-			mustHave: []string{"`--attachment <path>` to `multica issue comment add`"},
-			mustNot:  []string{"multica attachment upload"},
+			mustHave: []string{
+				"`--attachment <path>` to `multica issue comment add`",
+				"![caption](attachment://<filename>)",
+			},
+			mustNot: []string{"multica attachment upload"},
 		},
 		"assignment": {
-			mustHave: []string{"`--attachment <path>` to `multica issue comment add`"},
-			mustNot:  []string{"multica attachment upload"},
+			mustHave: []string{
+				"`--attachment <path>` to `multica issue comment add`",
+				"![caption](attachment://<filename>)",
+			},
+			mustNot: []string{"multica attachment upload"},
 		},
 		// Direct chat: the upload binds to the reply and the browser renders a
 		// card, so the file can sit inline where the agent puts it.
@@ -191,8 +197,12 @@ func TestBriefSurfaceDeliveryPolicy(t *testing.T) {
 			mustNot:  []string{"multica attachment upload"},
 		},
 		"quickcreate": {
-			mustHave: []string{"your stdout is text-only", "`multica issue create` call itself via `--attachment <path>`"},
-			mustNot:  []string{"multica attachment upload"},
+			mustHave: []string{
+				"your stdout is text-only",
+				"`multica issue create` call itself via `--attachment <path>`",
+				"![caption](attachment://<filename>)",
+			},
+			mustNot: []string{"multica attachment upload"},
 		},
 	}
 

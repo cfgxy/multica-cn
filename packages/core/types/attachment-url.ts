@@ -23,6 +23,7 @@
 
 const DOWNLOAD_PREFIX = "/api/attachments/";
 const DOWNLOAD_SUFFIX = "/download";
+const ATTACHMENT_PROTOCOL_PREFIX = "attachment://";
 const CHANNEL_MEDIA_MARKER_RE =
   /<!-- multica:channel-media:[0-9a-fA-F-]{36} -->/g;
 
@@ -40,6 +41,185 @@ export function stripChannelMediaMarkers(content: string): string {
  * path component as an id.
  */
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+export interface ParsedAttachmentProtocolTarget {
+  id?: string;
+  filename: string;
+  rawTarget: string;
+}
+
+export function isAttachmentProtocolURL(rawURL: string): boolean {
+  return /^attachment:\/\//i.test((rawURL ?? "").trim());
+}
+
+function safeDecodeURIComponent(value: string): string {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return value;
+  }
+}
+
+export function normalizeAttachmentFilename(
+  filename: string | null | undefined,
+): string {
+  const normalized = (filename ?? "")
+    .trim()
+    .replace(/\\/g, "/")
+    .replace(/^\/+/, "");
+  if (!normalized) return "";
+  const parts: string[] = [];
+  for (const part of normalized.split("/")) {
+    if (!part || part === ".") continue;
+    if (part === "..") return "";
+    parts.push(part);
+  }
+  return parts.join("/");
+}
+
+export function attachmentFilenameBasename(
+  filename: string | null | undefined,
+): string {
+  const normalized = normalizeAttachmentFilename(filename);
+  if (!normalized) return "";
+  const idx = normalized.lastIndexOf("/");
+  return idx >= 0 ? normalized.slice(idx + 1) : normalized;
+}
+
+/**
+ * Parse an `attachment://<id|filename|relpath>` URL into a normalized target.
+ * Strips query/fragment, safely URL-decodes, normalizes `./` and `\`, and
+ * rejects empty targets or `..` traversal segments.
+ */
+export function parseAttachmentProtocolTarget(
+  rawURL: string,
+): ParsedAttachmentProtocolTarget | undefined {
+  const trimmed = (rawURL ?? "").trim();
+  if (!isAttachmentProtocolURL(trimmed)) return undefined;
+
+  const withoutPrefix = trimmed.slice(ATTACHMENT_PROTOCOL_PREFIX.length);
+  const withoutQueryOrFragment = stripQueryAndFragment(withoutPrefix);
+  const decoded = safeDecodeURIComponent(withoutQueryOrFragment);
+  const normalized = normalizeAttachmentFilename(decoded);
+  if (!normalized) return undefined;
+
+  const filename = attachmentFilenameBasename(normalized);
+  if (!filename) return undefined;
+
+  return {
+    id: UUID_RE.test(normalized) ? normalized.toLowerCase() : undefined,
+    filename,
+    rawTarget: normalized,
+  };
+}
+
+export function attachmentMatchesProtocolURL(
+  rawURL: string,
+  attachment: { id: string; filename?: string | null },
+): boolean {
+  const parsed = parseAttachmentProtocolTarget(rawURL);
+  if (!parsed) return false;
+  if (parsed.id) {
+    return parsed.id === attachment.id.toLowerCase();
+  }
+  if (!attachment.filename) return false;
+  const attFull = normalizeAttachmentFilename(attachment.filename);
+  const attBase = attachmentFilenameBasename(attachment.filename);
+  if (!attFull && !attBase) return false;
+  return (
+    parsed.rawTarget === attFull ||
+    parsed.rawTarget === attBase ||
+    parsed.filename === attBase
+  );
+}
+
+function blankOutPreservingNewlines(text: string): string {
+  return text.replace(/[^\n]/g, " ");
+}
+
+/**
+ * Blank fenced code blocks and inline code spans while preserving offsets and
+ * newlines. Linear scanner (no backreferenced regexes) so agent-authored
+ * markdown cannot trigger ReDoS.
+ */
+export function maskMarkdownCode(content: string): string {
+  if (!content) return "";
+  const lines = content.split("\n");
+  let fence: string | null = null;
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i]!;
+    if (fence !== null) {
+      lines[i] = blankOutPreservingNewlines(line);
+      const closeMatch = /^[ \t]{0,3}(`{3,}|~{3,})[ \t]*$/.exec(line);
+      if (
+        closeMatch !== null &&
+        closeMatch[1]![0] === fence[0] &&
+        closeMatch[1]!.length >= fence.length
+      ) {
+        fence = null;
+      }
+      continue;
+    }
+    const openMatch = /^[ \t]{0,3}(`{3,}|~{3,})(.*)$/.exec(line);
+    if (openMatch !== null) {
+      const marker = openMatch[1]!;
+      const info = openMatch[2] ?? "";
+      // CommonMark: backtick fence info strings cannot contain backticks; a
+      // line like ```foo``` is an inline code span, not a fenced block.
+      if (marker[0] !== "`" || !info.includes("`")) {
+        fence = marker;
+        lines[i] = blankOutPreservingNewlines(line);
+        continue;
+      }
+    }
+  }
+
+  const fenceMasked = lines.join("\n");
+  if (!fenceMasked.includes("`")) return fenceMasked;
+
+  const chars = fenceMasked.split("");
+  let i = 0;
+  while (i < chars.length) {
+    if (chars[i] !== "`") {
+      i++;
+      continue;
+    }
+    let openLen = 0;
+    while (i + openLen < chars.length && chars[i + openLen] === "`") {
+      openLen++;
+    }
+    let j = i + openLen;
+    let foundClose = -1;
+    while (j < chars.length) {
+      if (chars[j] === "\n" && chars[j + 1] === "\n") {
+        // Inline code spans cannot cross a blank line (paragraph boundary).
+        break;
+      }
+      if (chars[j] === "`") {
+        let closeLen = 0;
+        while (j + closeLen < chars.length && chars[j + closeLen] === "`") {
+          closeLen++;
+        }
+        if (closeLen === openLen) {
+          foundClose = j + closeLen;
+          break;
+        }
+        j += closeLen;
+        continue;
+      }
+      j++;
+    }
+    if (foundClose !== -1) {
+      for (let k = i; k < foundClose; k++) {
+        if (chars[k] !== "\n") chars[k] = " ";
+      }
+      i = foundClose;
+    } else {
+      i += openLen;
+    }
+  }
+  return chars.join("");
+}
 
 /**
  * Build the stable per-attachment download URL — the only attachment
@@ -111,26 +291,46 @@ function contentReferencesURL(content: string, url?: string): boolean {
   return stable !== "" && content.includes(stable);
 }
 
+const MARKDOWN_ATTACHMENT_PROTOCOL_RE =
+  /!?\[(?:\\.|[^\]\\\n])*\]\(\s*(?:<(attachment:\/\/[^>\n]+)>|(attachment:\/\/(?:[^()\s]+|\([^()\s]*\))+))[^)]*\)/gi;
+const HTML_ATTACHMENT_PROTOCOL_RE =
+  /<(?:img|a)\b[^>]*?\s(?:src|href)\s*=\s*(?:"(attachment:\/\/[^"]*)"|'(attachment:\/\/[^']*)'|(attachment:\/\/[^\s"'>]+))[^>]*>/gi;
+const AUTOLINK_ATTACHMENT_PROTOCOL_RE = /<(attachment:\/\/[^\s<>]+)>/gi;
+
+function extractAttachmentProtocolRefs(content: string): string[] {
+  const masked = maskMarkdownCode(content);
+  if (!/attachment:\/\//i.test(masked)) return [];
+
+  const refs: string[] = [];
+  for (const m of masked.matchAll(MARKDOWN_ATTACHMENT_PROTOCOL_RE)) {
+    const url = (m[1] ?? m[2] ?? "").trim();
+    if (url) refs.push(url);
+  }
+  for (const m of masked.matchAll(HTML_ATTACHMENT_PROTOCOL_RE)) {
+    const url = (m[1] ?? m[2] ?? m[3] ?? "").trim();
+    if (url) refs.push(url);
+  }
+  for (const m of masked.matchAll(AUTOLINK_ATTACHMENT_PROTOCOL_RE)) {
+    const url = (m[1] ?? "").trim();
+    if (url) refs.push(url);
+  }
+  return refs;
+}
+
 /**
  * True when `content` contains a markdown reference to `attachment` —
- * either the new stable `/api/attachments/<id>/download` shape OR the
- * legacy `att.url` storage path. Used by the comment composer and the
- * standalone-attachment list to decide whether an attachment is "in
- * the body" (and therefore should be tracked as a comment attachment
- * but not rendered as a card below).
- *
- * The two checks must both run because:
- *   - new uploads from a post-MUL-3130 client write the stable URL
- *   - edits to a pre-MUL-3130 comment may still have the legacy URL
- *     in `entry.content`
- *   - mixed content (one image uploaded before the fix, one after)
- *     is possible during the rollout window
+ * either the new stable `/api/attachments/<id>/download` shape, the legacy
+ * `att.url` storage path, or a non-code `attachment://<id|filename>` ref.
+ * Used by the comment composer and the standalone-attachment list to decide
+ * whether an attachment is "in the body" (and therefore should be tracked as
+ * a comment attachment but not rendered as a card below).
  */
 export function contentReferencesAttachment(
   content: string,
   attachment: {
     id: string;
     url: string;
+    filename?: string;
     download_url?: string;
     markdown_url?: string;
   },
@@ -140,5 +340,8 @@ export function contentReferencesAttachment(
   if (contentReferencesURL(content, attachment.url)) return true;
   if (contentReferencesURL(content, attachment.download_url)) return true;
   if (contentReferencesURL(content, attachment.markdown_url)) return true;
+  for (const refURL of extractAttachmentProtocolRefs(content)) {
+    if (attachmentMatchesProtocolURL(refURL, attachment)) return true;
+  }
   return false;
 }
