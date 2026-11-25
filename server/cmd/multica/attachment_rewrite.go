@@ -215,32 +215,39 @@ func rewriteUploadedAttachmentRefs(body string, uploaded []uploadedAttachment) s
 	doc := goldmark.New(goldmark.WithExtensions(extension.GFM)).Parser().Parse(text.NewReader(source))
 
 	codeRanges := collectCodeRanges(source, doc)
+	var usedRanges []byteRange
 	var edits []byteEdit
 	refTargets := make(map[string]string)
 
-	cursor := 0
 	_ = ast.Walk(doc, func(n ast.Node, entering bool) (ast.WalkStatus, error) {
-		if !entering {
+		if entering {
+			switch n.(type) {
+			case *ast.FencedCodeBlock, *ast.CodeBlock, *ast.CodeSpan, *ast.HTMLBlock:
+				return ast.WalkSkipChildren, nil
+			}
 			return ast.WalkContinue, nil
 		}
+
+		// Postorder traversal lets inner nodes (such as clickable images
+		// `[![img](a)](b)`) claim and record their destination spans before
+		// enclosing links search past them using usedRanges.
 		switch node := n.(type) {
-		case *ast.FencedCodeBlock, *ast.CodeBlock, *ast.CodeSpan, *ast.HTMLBlock:
-			return ast.WalkSkipChildren, nil
 		case *ast.AutoLink:
 			raw := string(node.URL(source))
 			if replacement, ok := matcher.resolve(raw); ok {
-				if start, stop, found := findAutoLinkSpan(source, raw, cursor, codeRanges); found {
+				minStart, maxStop := nodeSearchBounds(node, source, false)
+				if start, stop, found := findAutoLinkSpan(source, raw, minStart, maxStop, codeRanges, usedRanges); found {
 					edits = append(edits, byteEdit{start: start, stop: stop, replacement: replacement})
-					cursor = stop
+					addUsedRange(&usedRanges, byteRange{start: start - 1, stop: stop + 1})
 				}
 			}
 		case *ast.Image:
 			raw := string(node.Destination)
 			if replacement, ok := matcher.resolve(raw); ok {
-				minStart := max(cursor, maxDescendantStop(node))
-				if start, stop, found := findInlineDestinationSpan(source, raw, minStart, len(source), codeRanges); found {
+				minStart, maxStop := nodeSearchBounds(node, source, true)
+				if bracketPos, start, stop, found := findInlineDestinationSpan(source, raw, minStart, maxStop, codeRanges, usedRanges); found {
 					edits = append(edits, byteEdit{start: start, stop: stop, replacement: replacement})
-					cursor = stop
+					addUsedRange(&usedRanges, byteRange{start: bracketPos, stop: stop})
 				} else {
 					refTargets[raw] = replacement
 				}
@@ -248,10 +255,10 @@ func rewriteUploadedAttachmentRefs(body string, uploaded []uploadedAttachment) s
 		case *ast.Link:
 			raw := string(node.Destination)
 			if replacement, ok := matcher.resolve(raw); ok {
-				minStart := max(cursor, maxDescendantStop(node))
-				if start, stop, found := findInlineDestinationSpan(source, raw, minStart, len(source), codeRanges); found {
+				minStart, maxStop := nodeSearchBounds(node, source, true)
+				if bracketPos, start, stop, found := findInlineDestinationSpan(source, raw, minStart, maxStop, codeRanges, usedRanges); found {
 					edits = append(edits, byteEdit{start: start, stop: stop, replacement: replacement})
-					cursor = stop
+					addUsedRange(&usedRanges, byteRange{start: bracketPos, stop: stop})
 				} else {
 					refTargets[raw] = replacement
 				}
@@ -287,6 +294,70 @@ func rewriteUploadedAttachmentRefs(body string, uploaded []uploadedAttachment) s
 	return out.String()
 }
 
+func lineStartAt(source []byte, pos int) int {
+	if pos < 0 {
+		pos = 0
+	} else if pos > len(source) {
+		pos = len(source)
+	}
+	if idx := bytes.LastIndexByte(source[:pos], '\n'); idx >= 0 {
+		return idx + 1
+	}
+	return 0
+}
+
+func lineStopAt(source []byte, pos int) int {
+	if pos < 0 {
+		pos = 0
+	} else if pos > len(source) {
+		pos = len(source)
+	}
+	if pos > 0 && source[pos-1] == '\n' {
+		return pos
+	}
+	if nl := bytes.IndexByte(source[pos:], '\n'); nl >= 0 {
+		return pos + nl + 1
+	}
+	return len(source)
+}
+
+func stripQuoteAndIndent(line []byte) []byte {
+	for {
+		i := 0
+		for i < len(line) && (line[i] == ' ' || line[i] == '\t') {
+			i++
+		}
+		line = line[i:]
+		if len(line) > 0 && line[0] == '>' {
+			line = line[1:]
+			continue
+		}
+		return line
+	}
+}
+
+func isOpeningFenceLine(line []byte) bool {
+	s := stripQuoteAndIndent(bytes.TrimRight(line, " \t\r"))
+	return bytes.HasPrefix(s, []byte("```")) || bytes.HasPrefix(s, []byte("~~~"))
+}
+
+func isClosingFenceLine(line []byte) bool {
+	s := stripQuoteAndIndent(bytes.TrimRight(line, " \t\r"))
+	if len(s) < 3 {
+		return false
+	}
+	ch := s[0]
+	if ch != '`' && ch != '~' {
+		return false
+	}
+	for i := 1; i < len(s); i++ {
+		if s[i] != ch {
+			return false
+		}
+	}
+	return true
+}
+
 func collectCodeRanges(source []byte, doc ast.Node) []byteRange {
 	var ranges []byteRange
 	_ = ast.Walk(doc, func(n ast.Node, entering bool) (ast.WalkStatus, error) {
@@ -296,23 +367,41 @@ func collectCodeRanges(source []byte, doc ast.Node) []byteRange {
 		switch node := n.(type) {
 		case *ast.FencedCodeBlock:
 			if lines := node.Lines(); lines != nil && lines.Len() > 0 {
-				start := lines.At(0).Start
-				// Include the opening fence line itself (e.g. ```md).
-				if idx := bytes.LastIndexByte(source[:start], '\n'); idx >= 0 {
-					start = idx + 1
-				} else {
-					start = 0
+				lineStart := lineStartAt(source, lines.At(0).Start)
+				prevEnd := lineStart
+				if prevEnd > 0 && source[prevEnd-1] == '\n' {
+					prevEnd--
 				}
+				if prevEnd > 0 && source[prevEnd-1] == '\r' {
+					prevEnd--
+				}
+				prevStart := 0
+				if idx := bytes.LastIndexByte(source[:prevEnd], '\n'); idx >= 0 {
+					prevStart = idx + 1
+				}
+				start := lineStart
+				if prevStart < lineStart && isOpeningFenceLine(source[prevStart:prevEnd]) {
+					start = prevStart
+				}
+
 				stop := lines.At(lines.Len() - 1).Stop
-				// Include the closing fence line as well.
-				if nl := bytes.IndexByte(source[stop:], '\n'); nl >= 0 {
-					nextLineStart := stop + nl + 1
-					if nextLineStart < len(source) {
-						if closeNL := bytes.IndexByte(source[nextLineStart:], '\n'); closeNL >= 0 {
-							stop = nextLineStart + closeNL + 1
-						} else {
-							stop = len(source)
-						}
+				if stop > 0 && stop < len(source) && source[stop-1] != '\n' {
+					if nl := bytes.IndexByte(source[stop:], '\n'); nl >= 0 {
+						stop += nl + 1
+					} else {
+						stop = len(source)
+					}
+				}
+				// Consume only the closing fence line itself; never spill onto the line after it.
+				if stop < len(source) {
+					lineEnd := len(source)
+					nextStart := len(source)
+					if nl := bytes.IndexByte(source[stop:], '\n'); nl >= 0 {
+						lineEnd = stop + nl
+						nextStart = lineEnd + 1
+					}
+					if isClosingFenceLine(source[stop:lineEnd]) {
+						stop = nextStart
 					}
 				}
 				ranges = append(ranges, byteRange{start: start, stop: stop})
@@ -350,6 +439,9 @@ func collectCodeRanges(source []byte, doc ast.Node) []byteRange {
 }
 
 func minMaxDescendantText(n ast.Node) (int, int) {
+	if n == nil {
+		return -1, -1
+	}
 	first := -1
 	last := -1
 	_ = ast.Walk(n, func(child ast.Node, entering bool) (ast.WalkStatus, error) {
@@ -378,6 +470,71 @@ func maxDescendantStop(n ast.Node) int {
 	return last
 }
 
+func nodeSearchBounds(n ast.Node, source []byte, includeOwnDescendants bool) (int, int) {
+	var blk ast.Node
+	for p := n.Parent(); p != nil; p = p.Parent() {
+		if p.Type() == ast.TypeBlock {
+			blk = p
+			break
+		}
+	}
+
+	blockStart := 0
+	blockStop := len(source)
+	if blk != nil {
+		if lines := blk.Lines(); lines != nil && lines.Len() > 0 {
+			blockStart = lines.At(0).Start
+			blockStop = lines.At(lines.Len() - 1).Stop
+		} else if first, last := minMaxDescendantText(blk); first >= 0 && last >= first {
+			blockStart = lineStartAt(source, first)
+			blockStop = lineStopAt(source, last)
+		}
+	}
+
+	minStart := blockStart
+	if includeOwnDescendants {
+		if dStop := maxDescendantStop(n); dStop > minStart {
+			minStart = dStop
+		}
+	}
+	for cur := n; cur != nil && cur != blk; cur = cur.Parent() {
+		for prev := cur.PreviousSibling(); prev != nil; prev = prev.PreviousSibling() {
+			if pStop := maxDescendantStop(prev); pStop > 0 {
+				if pStop > minStart {
+					minStart = pStop
+				}
+				break
+			}
+		}
+	}
+
+	maxStop := blockStop
+	for cur := n; cur != nil && cur != blk; cur = cur.Parent() {
+		for next := cur.NextSibling(); next != nil; next = next.NextSibling() {
+			if first, _ := minMaxDescendantText(next); first >= 0 {
+				if first >= minStart && first < maxStop {
+					maxStop = first
+				}
+				break
+			}
+		}
+	}
+
+	return minStart, maxStop
+}
+
+func addUsedRange(ranges *[]byteRange, r byteRange) {
+	if r.stop <= r.start {
+		return
+	}
+	idx := sort.Search(len(*ranges), func(i int) bool {
+		return (*ranges)[i].start >= r.start
+	})
+	*ranges = append(*ranges, byteRange{})
+	copy((*ranges)[idx+1:], (*ranges)[idx:])
+	(*ranges)[idx] = r
+}
+
 func offsetInRanges(pos int, ranges []byteRange) (int, bool) {
 	for _, r := range ranges {
 		if pos >= r.start && pos < r.stop {
@@ -390,6 +547,22 @@ func offsetInRanges(pos int, ranges []byteRange) (int, bool) {
 	return pos, false
 }
 
+func offsetInUsedOrCode(pos int, codeRanges, usedRanges []byteRange) (int, bool) {
+	nextCode, inCode := offsetInRanges(pos, codeRanges)
+	nextUsed, inUsed := offsetInRanges(pos, usedRanges)
+	if !inCode && !inUsed {
+		return pos, false
+	}
+	next := pos
+	if inCode && nextCode > next {
+		next = nextCode
+	}
+	if inUsed && nextUsed > next {
+		next = nextUsed
+	}
+	return next, true
+}
+
 func isBackslashEscaped(source []byte, idx int) bool {
 	count := 0
 	for i := idx - 1; i >= 0 && source[i] == '\\'; i-- {
@@ -398,20 +571,23 @@ func isBackslashEscaped(source []byte, idx int) bool {
 	return count%2 == 1
 }
 
-func findAutoLinkSpan(source []byte, raw string, minStart int, codeRanges []byteRange) (int, int, bool) {
+func findAutoLinkSpan(source []byte, raw string, minStart, maxStop int, codeRanges, usedRanges []byteRange) (int, int, bool) {
+	if maxStop > len(source) {
+		maxStop = len(source)
+	}
 	target := []byte("<" + raw + ">")
 	pos := minStart
-	for pos < len(source) {
-		if next, inside := offsetInRanges(pos, codeRanges); inside {
+	for pos < maxStop {
+		if next, inside := offsetInUsedOrCode(pos, codeRanges, usedRanges); inside {
 			pos = next
 			continue
 		}
-		idx := bytes.Index(source[pos:], target)
+		idx := bytes.Index(source[pos:maxStop], target)
 		if idx < 0 {
 			return 0, 0, false
 		}
 		abs := pos + idx
-		if next, inside := offsetInRanges(abs, codeRanges); inside {
+		if next, inside := offsetInUsedOrCode(abs, codeRanges, usedRanges); inside {
 			pos = next
 			continue
 		}
@@ -420,13 +596,15 @@ func findAutoLinkSpan(source []byte, raw string, minStart int, codeRanges []byte
 	return 0, 0, false
 }
 
-func findInlineDestinationSpan(source []byte, expectedDest string, minStart, maxStop int, codeRanges []byteRange) (int, int, bool) {
+func findInlineDestinationSpan(source []byte, expectedDest string, minStart, maxStop int, codeRanges, usedRanges []byteRange) (int, int, int, bool) {
 	if maxStop > len(source) {
 		maxStop = len(source)
 	}
 	for i := minStart; i < maxStop-1; i++ {
-		if next, inside := offsetInRanges(i, codeRanges); inside {
-			i = next - 1
+		if next, inside := offsetInUsedOrCode(i, codeRanges, usedRanges); inside {
+			if next > i {
+				i = next - 1
+			}
 			continue
 		}
 		if source[i] != ']' || source[i+1] != '(' || isBackslashEscaped(source, i) {
@@ -437,10 +615,10 @@ func findInlineDestinationSpan(source []byte, expectedDest string, minStart, max
 			continue
 		}
 		if parsedDest == expectedDest || unescapeCommonMark(parsedDest) == expectedDest {
-			return destStart, destEnd, true
+			return i, destStart, destEnd, true
 		}
 	}
-	return 0, 0, false
+	return 0, 0, 0, false
 }
 
 func parseCommonMarkInlineDest(source []byte, pos, limit int) (int, int, string, bool) {

@@ -220,4 +220,22 @@ describe("parseAttachmentProtocolTarget & maskMarkdownCode", () => {
     expect(masked.split("\n").length).toBe(src.split("\n").length);
     expect(masked).not.toContain("attachment://");
   });
+
+  it("closes CRLF fenced blocks so subsequent attachment:// refs still trigger dedup", () => {
+    const withFilename = { id: ID, url: "/uploads/ws/foo.png", filename: "foo.png" };
+    const codeOnlyCrlf = [
+      "```md",
+      "![code](attachment://foo.png)",
+      "```",
+    ].join("\r\n");
+    expect(contentReferencesAttachment(codeOnlyCrlf, withFilename)).toBe(false);
+
+    const codeThenRealCrlf = [
+      "```md",
+      "![code](attachment://foo.png)",
+      "```",
+      "![real](attachment://foo.png)",
+    ].join("\r\n");
+    expect(contentReferencesAttachment(codeThenRealCrlf, withFilename)).toBe(true);
+  });
 });
