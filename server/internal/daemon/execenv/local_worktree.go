@@ -143,14 +143,23 @@ type LocalWorktreeParams struct {
 	// later task continues it, so a same-named branch belonging to the user,
 	// to another agent, or to another workspace is never adopted. All three
 	// empty means "no conversation": the task gets a task-scoped branch.
-	WorkspaceID    string
-	AgentID        string
-	ConversationID string
+	WorkspaceID     string
+	AgentID         string
+	ConversationID  string
+	ProjectID       string
+	SquadID         string
+	RuntimeID       string
+	RepositoryScope string
+	RetainCheckout  bool
 }
 
 // owner is the identity a branch created for this task is recorded under.
 func (p LocalWorktreeParams) owner() branchOwner {
-	return branchOwner{WorkspaceID: p.WorkspaceID, AgentID: p.AgentID, ConversationID: p.ConversationID}
+	return branchOwner{
+		WorkspaceID: p.WorkspaceID, AgentID: p.AgentID, ConversationID: p.ConversationID,
+		ProjectID: p.ProjectID, SquadID: p.SquadID, RuntimeID: p.RuntimeID,
+		RepositoryScope: p.RepositoryScope,
+	}
 }
 
 // localWorktreeConversation names the work line a worktree task belongs to, so
@@ -165,6 +174,9 @@ func (p LocalWorktreeParams) owner() branchOwner {
 // Tasks with neither an issue nor a chat session have no conversation to
 // continue and get "", "".
 func localWorktreeConversation(params PrepareParams) (key, id string) {
+	if params.Task.ChatSessionID != "" {
+		return "chat-" + taskKey(params.Task.ChatSessionID), params.Task.ChatSessionID
+	}
 	if params.Task.IssueID != "" {
 		if params.IssueIdentifier != "" {
 			return params.IssueIdentifier, params.Task.IssueID
@@ -174,7 +186,14 @@ func localWorktreeConversation(params PrepareParams) (key, id string) {
 	if params.Task.ChatSessionID != "" {
 		return "chat-" + taskKey(params.Task.ChatSessionID), params.Task.ChatSessionID
 	}
+	if params.Task.AutopilotID != "" {
+		return "automation-" + taskKey(params.Task.AutopilotID), params.Task.AutopilotID
+	}
 	return "", ""
+}
+
+func LocalWorktreeConversation(params PrepareParams) (string, string) {
+	return localWorktreeConversation(params)
 }
 
 // LocalWorktree is a prepared worktree plus everything the daemon needs to
@@ -217,6 +236,8 @@ type LocalWorktree struct {
 	// version is right — so this is what the turn's prompt tells it to fix.
 	// Finalize refuses to deliver while any of them are still unmerged.
 	ReplayConflicts []string
+	// RetainCheckout preserves the completed worktree for same-identity reuse.
+	RetainCheckout bool
 	// createdBranch records that this prepare put the branch where it is, so
 	// dropping it discards nothing an earlier turn delivered. False for a
 	// continued branch: that one has to survive even a turn that produced
@@ -468,16 +489,17 @@ func PrepareLocalWorktree(params LocalWorktreeParams, logger *slog.Logger) (*Loc
 	}
 
 	wt := &LocalWorktree{
-		GitRoot:       gitRoot,
-		Path:          worktreePath,
-		WorkDir:       filepath.Join(worktreePath, rel),
-		Branch:        actualBranch,
-		BaseCommit:    plan.base,
-		Continued:     plan.continues,
-		createdBranch: createdBranch,
-		userState:     userState,
-		priorState:    plan.priorState,
-		owner:         plan.owner,
+		GitRoot:        gitRoot,
+		Path:           worktreePath,
+		WorkDir:        filepath.Join(worktreePath, rel),
+		Branch:         actualBranch,
+		BaseCommit:     plan.base,
+		Continued:      plan.continues,
+		RetainCheckout: params.RetainCheckout && plan.owner.valid(),
+		createdBranch:  createdBranch,
+		userState:      userState,
+		priorState:     plan.priorState,
+		owner:          plan.owner,
 		// A branch a sibling task forked because the conversation's own branch
 		// was busy is delivered once and never continued, so it records nothing.
 		tracksState: plan.tracksState && actualBranch == plan.name,
@@ -716,7 +738,7 @@ func (w *LocalWorktree) Finalize(logger *slog.Logger) (LocalWorktreeOutcome, err
 	tip, err := runGitTrimmed(w.Path, "rev-parse", "--verify", "HEAD")
 	producedWork := err != nil || tip != w.BaseCommit
 	dropped := false
-	if !producedWork && w.createdBranch {
+	if !producedWork && w.createdBranch && !w.RetainCheckout {
 		// A detached checkout can return to the base while the task branch still
 		// carries work. Only discard a branch that itself remains at the base.
 		branchTip, branchErr := runGitTrimmed(w.GitRoot, "rev-parse", "--verify", "refs/heads/"+w.Branch)
@@ -788,6 +810,14 @@ func (w *LocalWorktree) Finalize(logger *slog.Logger) (LocalWorktreeOutcome, err
 					"a new branch instead of continuing this one",
 				w.Branch, recErr, w.Path, w.GitRoot)
 		}
+	}
+
+	if w.RetainCheckout && !dropped && len(outcome.Excluded) == 0 {
+		if err := writeRetainedLocalWorktree(w); err != nil {
+			outcome.PreservedPath = w.Path
+			return outcome, err
+		}
+		return outcome, nil
 	}
 
 	// Budget exclusions are preserved, never deleted: the excluded content is
@@ -1776,11 +1806,15 @@ type branchOwner struct {
 	// the branch attempt 1 left behind is its own instead of failing on the
 	// name collision (RUYI-116). Empty on a conversation branch, which is
 	// shared by every task of that conversation by design.
-	TaskID string
+	TaskID          string
+	ProjectID       string
+	SquadID         string
+	RuntimeID       string
+	RepositoryScope string
 }
 
 func (o branchOwner) valid() bool {
-	return o.WorkspaceID != "" && o.ConversationID != ""
+	return o.WorkspaceID != "" && o.AgentID != "" && o.ConversationID != ""
 }
 
 // validTask reports whether this owner identifies one task well enough to
@@ -1803,14 +1837,24 @@ func (o branchOwner) matches(recorded branchOwner) bool {
 	if o.TaskID != "" || recorded.TaskID != "" {
 		return o == recorded
 	}
-	return o.WorkspaceID == recorded.WorkspaceID && o.ConversationID == recorded.ConversationID
+	return o.WorkspaceID == recorded.WorkspaceID &&
+		o.AgentID == recorded.AgentID &&
+		o.ConversationID == recorded.ConversationID &&
+		o.ProjectID == recorded.ProjectID &&
+		o.SquadID == recorded.SquadID &&
+		o.RuntimeID == recorded.RuntimeID &&
+		o.RepositoryScope == recorded.RepositoryScope
 }
 
 const (
-	ownerTrailerWorkspace    = "Multica-Workspace"
-	ownerTrailerAgent        = "Multica-Agent"
-	ownerTrailerConversation = "Multica-Conversation"
-	ownerTrailerTask         = "Multica-Task"
+	ownerTrailerWorkspace       = "Multica-Workspace"
+	ownerTrailerAgent           = "Multica-Agent"
+	ownerTrailerConversation    = "Multica-Conversation"
+	ownerTrailerTask            = "Multica-Task"
+	ownerTrailerProject         = "Multica-Project"
+	ownerTrailerSquad           = "Multica-Squad"
+	ownerTrailerRuntime         = "Multica-Runtime"
+	ownerTrailerRepositoryScope = "Multica-Repository-Scope"
 )
 
 // branchRecord is what refs/multica/local-state/<branch> holds: a commit whose
@@ -1870,6 +1914,10 @@ func branchRecordMessage(owner branchOwner) string {
 	if owner.TaskID != "" {
 		fmt.Fprintf(&b, "%s: %s\n", ownerTrailerTask, owner.TaskID)
 	}
+	fmt.Fprintf(&b, "%s: %s\n", ownerTrailerProject, owner.ProjectID)
+	fmt.Fprintf(&b, "%s: %s\n", ownerTrailerSquad, owner.SquadID)
+	fmt.Fprintf(&b, "%s: %s\n", ownerTrailerRuntime, owner.RuntimeID)
+	fmt.Fprintf(&b, "%s: %s\n", ownerTrailerRepositoryScope, owner.RepositoryScope)
 	return b.String()
 }
 
@@ -1897,6 +1945,14 @@ func readBranchRecord(gitRoot, commit string) (branchRecord, error) {
 			record.owner.ConversationID = value
 		case ownerTrailerTask:
 			record.owner.TaskID = value
+		case ownerTrailerProject:
+			record.owner.ProjectID = value
+		case ownerTrailerSquad:
+			record.owner.SquadID = value
+		case ownerTrailerRuntime:
+			record.owner.RuntimeID = value
+		case ownerTrailerRepositoryScope:
+			record.owner.RepositoryScope = value
 		}
 	}
 	if checkpoint, err := runGitTrimmed(gitRoot, "rev-parse", "--verify", "--quiet", commit+"^2"); err == nil {
@@ -2110,7 +2166,7 @@ func planForExistingBranch(gitRoot, name, headSHA string, owner branchOwner, con
 	}
 	// The user merged it: the branch tip carries nothing HEAD does not, so
 	// continuing from it would strand this task behind their own commits.
-	if _, mergedErr := runGit(gitRoot, "merge-base", "--is-ancestor", name, "HEAD"); mergedErr == nil {
+	if _, mergedErr := runGit(gitRoot, "merge-base", "--is-ancestor", name, "HEAD"); mergedErr == nil && tip != headSHA {
 		plan.reset = true
 		return plan, true
 	}
