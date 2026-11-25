@@ -1837,13 +1837,11 @@ func (o branchOwner) matches(recorded branchOwner) bool {
 	if o.TaskID != "" || recorded.TaskID != "" {
 		return o == recorded
 	}
+	// A conversation's delivery branch survives a handoff to another agent.
+	// Physical checkout reuse has stricter scope matching in
+	// LocalWorktreeReuseMatches; this check governs only branch lineage.
 	return o.WorkspaceID == recorded.WorkspaceID &&
-		o.AgentID == recorded.AgentID &&
-		o.ConversationID == recorded.ConversationID &&
-		o.ProjectID == recorded.ProjectID &&
-		o.SquadID == recorded.SquadID &&
-		o.RuntimeID == recorded.RuntimeID &&
-		o.RepositoryScope == recorded.RepositoryScope
+		o.ConversationID == recorded.ConversationID
 }
 
 const (

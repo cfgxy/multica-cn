@@ -191,6 +191,7 @@ var postConsolidationStems = []string{
 	"983_daemon_token_owner",                             // daemon token ownership binding
 	"984_prompt_proposal_enactment_target",               // RUYI-858 (persistent enactment target on prompt_proposal: clause_library default vs static_prompt)
 	"985_task_usage_hourly_watermark_bootstrap",          // RUYI-872
+	"986_live_session_chat_link",
 	"993_runtime_removed_at",                             // RUYI-895 (hides a Runtime from user-managed lists)
 	"994_clause_injection_observation",                   // RUYI-891 (claim-time degraded carrier observations)
 	"994_clause_injection_observation_id_index",
@@ -209,10 +210,6 @@ var postConsolidationStems = []string{
 	"999_knowledge_entry_operation",           // RUYI-889
 	"999_knowledge_lifecycle_writeback_claim", // RUYI-916
 	"999_knowledge_lifecycle_writeback_claim_index",
-	"1012_runtime_cost_budget", // RUYI-665; reallocated from collided 966-969 stems
-	"1013_runtime_cost_budget_pkey_index",
-	"1014_runtime_cost_budget_primary_key",
-	"1015_runtime_cost_budget_scope_index",
 	"947_computer_management",
 	"948_computer_binding_account",
 	"949_computer_operation_id",
