@@ -17,11 +17,12 @@ import (
 // The progress card is the process view of a run: one updatable card that
 // carries what the agent is doing, patched forward as the run proceeds, and
 // stopped at a terminal frame. It deliberately does NOT carry the answer —
-// the answer stays the separate ordinary message sendChatReply posts, and the
-// card's own footer says so. That separation is what distinguishes this from
-// the card lifecycle removed earlier (see Patcher's doc comment): the reply is
-// still a plain IM message, and the card is an extra, visibly-stopped artifact
-// beside it.
+// the answer stays the separate ordinary message sendChatReply posts, while
+// the terminal card is replaced with a one-sentence state summary. That
+// separation is what distinguishes this from the card lifecycle removed
+// earlier (see Patcher's doc comment): the reply is still a plain IM message,
+// and the card is a process-only artifact that visibly settles without
+// retaining its expanded trace.
 const (
 	// progressPatchInterval is the floor between two Lark writes for ONE chat.
 	// Scheduling is per-chat rather than per-task on purpose: the write quota
@@ -73,7 +74,8 @@ const (
 	larkRateLimitCode = 230020
 )
 
-// ProgressState is the lifecycle state the card header and footer render.
+// ProgressState is the lifecycle state the running card or terminal summary
+// renders.
 type ProgressState string
 
 const (
@@ -129,37 +131,25 @@ type defaultProgressRenderer struct{}
 // NewDefaultProgressRenderer returns the production progress-card renderer.
 func NewDefaultProgressRenderer() ProgressRenderer { return &defaultProgressRenderer{} }
 
-// progressStateMeta is the per-state header suffix, header colour and footer.
-// The footer is load-bearing product text, not decoration: it tells the reader
-// the card has stopped and where the actual answer is, which is what keeps a
-// stopped process card from reading as a truncated reply.
-func progressStateMeta(state ProgressState) (titleSuffix, template, footer string) {
+// progressTerminalSummary intentionally contains no process-entry content. Tool
+// inputs/results can be long or sensitive even after the streaming renderer's
+// redaction, and the terminal card is only a compact state marker; the full
+// user-facing reply remains the separate message sent by sendChatReply.
+func progressTerminalSummary(state ProgressState) string {
 	switch state {
 	case ProgressStateCompleted:
-		return "已完成", "green", "本过程卡片已停止更新，完整答复见下一条消息。"
+		return "任务已完成，完整答复见下一条消息。"
 	case ProgressStateFailed:
-		return "失败", "red", "本过程卡片已停止更新（失败），完整错误说明见下一条消息。"
+		return "任务失败，完整错误说明见下一条消息。"
 	case ProgressStateCancelled:
-		return "已取消", "grey", "本过程卡片已停止更新（已取消），本次运行没有产生答复。"
+		return "任务已取消。"
 	default:
-		return "进行中", "blue", ""
+		return ""
 	}
 }
 
-func progressKindLabel(kind ProgressEntryKind) (label, color string) {
-	switch kind {
-	case ProgressEntryToolUse:
-		return "工具调用", "blue"
-	case ProgressEntryToolResult:
-		return "工具结果", "green"
-	case ProgressEntryError:
-		return "错误", "red"
-	default:
-		return "思考", "grey"
-	}
-}
-
-// progressResultDot renders the three-valued tool outcome.
+// progressResultDot renders the three-valued tool outcome without changing the
+// compact grey text treatment of the row itself.
 func progressResultDot(success *bool) string {
 	switch {
 	case success == nil:
@@ -171,80 +161,79 @@ func progressResultDot(success *bool) string {
 	}
 }
 
-func renderProgressEntryElement(e ProgressEntry) map[string]any {
-	if e.Kind == ProgressEntryThinking {
-		return map[string]any{
-			"tag": "div",
-			"text": map[string]any{
-				"tag":        "plain_text",
-				"content":    "💭 " + e.Text,
-				"text_size":  "notation",
-				"text_color": "grey",
-			},
-		}
-	}
-	label, color := progressKindLabel(e.Kind)
-	var body string
-	switch e.Kind {
-	case ProgressEntryToolUse:
-		// 「工具名 + 调用说明」 — the same two layers the web transcript row
-		// shows (chat-message-list's tool row: name span + summary span).
-		body = "**" + e.Tool + "**"
-		if e.Text != "" {
-			body += " " + e.Text
-		}
-	case ProgressEntryToolResult:
-		// 「工具名 + 结果摘要预览」 with the 「tool 结果：」 prefix of the web's
-		// tool_result_named row; an absent preview degrades to the bare row so
-		// no dangling separator renders.
-		body = progressResultDot(e.Success) + " **" + e.Tool + "**"
-		if e.Text != "" {
-			body += " 结果：" + e.Text
-		}
-	default:
-		body = e.Text
-	}
+func progressPlainTextElement(content string) map[string]any {
 	return map[string]any{
-		"tag":     "markdown",
-		"content": fmt.Sprintf("<text_tag color='%s'>%s</text_tag> %s", color, label, body),
+		"tag": "div",
+		"text": map[string]any{
+			"tag":        "plain_text",
+			"content":    content,
+			"text_size":  "notation",
+			"text_color": "grey",
+		},
 	}
 }
 
+func renderProgressEntryElement(e ProgressEntry) map[string]any {
+	var content string
+	switch e.Kind {
+	case ProgressEntryThinking:
+		content = "💭 " + e.Text
+	case ProgressEntryToolUse:
+		content = "工具调用 · " + e.Tool
+		if e.Text != "" {
+			content += " · " + e.Text
+		}
+	case ProgressEntryToolResult:
+		content = "工具结果 · " + progressResultDot(e.Success) + " " + e.Tool
+		if e.Text != "" {
+			content += " · " + e.Text
+		}
+	case ProgressEntryError:
+		content = "错误 · " + e.Text
+	default:
+		content = e.Text
+	}
+	// Schema-2 plain_text is deliberately used for every running row: it is
+	// the one Lark element that supports the compact notation size and muted
+	// colour without introducing markdown emphasis. URLs and error markers
+	// remain literal, readable text rather than being hidden by styling.
+	return progressPlainTextElement(content)
+}
+
 func (defaultProgressRenderer) RenderProgress(in ProgressInput) (CardRender, error) {
+	// A terminal PATCH replaces the expanded process view with exactly one
+	// compact sentence. Do not retain the header, dividers, or entry list: all
+	// of them consume visual space after the task has stopped.
+	if in.State != ProgressStateRunning {
+		doc := map[string]any{
+			"schema": "2.0",
+			"config": map[string]any{
+				"wide_screen_mode": true,
+				"update_multi":     true,
+			},
+			"body": map[string]any{"elements": []any{progressPlainTextElement(progressTerminalSummary(in.State))}},
+		}
+		raw, err := json.Marshal(doc)
+		if err != nil {
+			return CardRender{}, err
+		}
+		return CardRender{JSON: string(raw)}, nil
+	}
+
 	name := in.AgentName
 	if name == "" {
 		name = "Multica"
 	}
-	suffix, template, footer := progressStateMeta(in.State)
 
 	elements := make([]any, 0, len(in.Entries)*2+4)
 	if in.Truncated {
-		elements = append(elements, map[string]any{
-			"tag": "div",
-			"text": map[string]any{
-				"tag":        "plain_text",
-				"content":    "仅显示最近更新。",
-				"text_size":  "notation",
-				"text_color": "grey",
-			},
-		}, map[string]any{"tag": "hr"})
+		elements = append(elements, progressPlainTextElement("仅显示最近更新。"), map[string]any{"tag": "hr"})
 	}
 	for i, e := range in.Entries {
 		if i > 0 {
 			elements = append(elements, map[string]any{"tag": "hr"})
 		}
 		elements = append(elements, renderProgressEntryElement(e))
-	}
-	if footer != "" {
-		elements = append(elements, map[string]any{"tag": "hr"}, map[string]any{
-			"tag": "div",
-			"text": map[string]any{
-				"tag":        "plain_text",
-				"content":    footer,
-				"text_size":  "notation",
-				"text_color": "grey",
-			},
-		})
 	}
 
 	// update_multi MUST be present: Lark silently no-ops a PATCH against a card
@@ -257,8 +246,8 @@ func (defaultProgressRenderer) RenderProgress(in ProgressInput) (CardRender, err
 			"update_multi":     true,
 		},
 		"header": map[string]any{
-			"title":    map[string]any{"tag": "plain_text", "content": name + " · " + suffix},
-			"template": template,
+			"title":    map[string]any{"tag": "plain_text", "content": name + " · 进行中"},
+			"template": "blue",
 		},
 		"body": map[string]any{"elements": elements},
 	}

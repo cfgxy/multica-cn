@@ -330,9 +330,8 @@ func (p *Patcher) SetTypingIndicatorManager(m *TypingIndicatorManager) {
 //     This does NOT restore the removed card lifecycle. What made that one
 //     unwanted was that the REPLY lived inside card chrome; here the reply is
 //     still the plain text message sendChatReply posts, and the progress card
-//     is a second, process-only artifact whose footer states it has stopped
-//     and that the answer is the next message — the same split ccconnect uses
-//     (platform/feishu/feishu.go progressStateMeta).
+//     is a second, process-only artifact whose terminal PATCH replaces its
+//     expanded trace with a one-sentence outcome summary.
 //
 // We deliberately do NOT subscribe to EventTaskQueued / EventTaskRunning
 // (a queued/running card frame carries no process information the task
