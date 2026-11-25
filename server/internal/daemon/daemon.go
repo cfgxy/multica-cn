@@ -10,6 +10,7 @@ import (
 	"math/rand"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -30,6 +31,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/daemon/supervisor"
 	"github.com/multica-ai/multica/server/internal/selfexec"
 	"github.com/multica-ai/multica/server/pkg/agent"
+	"github.com/multica-ai/multica/server/pkg/protocol"
 	"github.com/multica-ai/multica/server/pkg/redact"
 	"github.com/multica-ai/multica/server/pkg/remotemcp"
 	"github.com/multica-ai/multica/server/pkg/skillbundle"
@@ -573,7 +575,13 @@ type Daemon struct {
 	// parent of this daemon's namespaced segment). The startup reconcile
 	// migrates own in-flight runs out of it; empty — as in directly
 	// constructed test daemons — disables migration entirely.
-	supervisedRunsBase string
+	supervisedRunsBase           string
+	environmentOperationsMu      sync.Mutex
+	environmentOperations        map[string]*environmentOperationLive
+	environmentOperationWorkers  sync.WaitGroup
+	environmentOperationsStopped bool
+	environmentPolicyMu          sync.Mutex
+	environmentPolicyScans       map[string]protocol.EnvironmentPolicyStatus
 	// restartMu guards restartBinary. Two goroutines can reach triggerRestart —
 	// the server-triggered handleUpdate and the autoUpdateLoop — and
 	// trySelfReload reads RestartBinary() from the latter to avoid racing the
@@ -2853,6 +2861,7 @@ func (d *Daemon) registerRuntimesForWorkspaceBatchLocked(ctx context.Context, wo
 		"daemon_id":         d.cfg.DaemonID,
 		"legacy_daemon_ids": d.cfg.LegacyDaemonIDs,
 		"device_name":       d.cfg.DeviceName,
+		"server_url":        registrationServerBaseURL(d.cfg.ServerBaseURL),
 		"cli_version":       d.cfg.CLIVersion,
 		"launched_by":       d.cfg.LaunchedBy,
 		"ops_caps":          d.opsCaps(),
@@ -2902,6 +2911,7 @@ func (d *Daemon) registerBuiltinRuntimesForWorkspaceLocked(ctx context.Context, 
 		"daemon_id":         d.cfg.DaemonID,
 		"legacy_daemon_ids": d.cfg.LegacyDaemonIDs,
 		"device_name":       d.cfg.DeviceName,
+		"server_url":        registrationServerBaseURL(d.cfg.ServerBaseURL),
 		"cli_version":       d.cfg.CLIVersion,
 		"launched_by":       d.cfg.LaunchedBy,
 		"ops_caps":          d.opsCaps(),
@@ -2923,6 +2933,19 @@ func (d *Daemon) registerBuiltinRuntimesForWorkspaceLocked(ctx context.Context, 
 	d.logger.Debug("builtin register response", "workspace_id", workspaceID, "runtimes", len(resp.Runtimes))
 	d.recordBuiltinVersionsSent(workspaceID, runtimes)
 	return resp, nil
+}
+
+func registrationServerBaseURL(raw string) string {
+	base, err := NormalizeServerBaseURL(raw)
+	if err != nil {
+		return ""
+	}
+	u, err := url.Parse(base)
+	if err != nil {
+		return ""
+	}
+	u.User = nil
+	return u.String()
 }
 
 // appendProfileRuntimes fetches the workspace's enabled custom runtime
@@ -9259,8 +9282,13 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 
 	// The fresh-session retry loop includes the normal resume refusal and the
 	// bounded Claude pipe-crash recovery path.
+	var usageEntriesOverride []TaskUsageEntry
+	var usageEntriesOverridden bool
 	result, tools, retryRetired := d.freshSessionRetryLoop(ctx, backend, promptOptions, execOpts, taskLog, &task, taskCtx, env, runtimeBrief, &msgSeq, result, tools, provider)
 	retiredSessionID = retryRetired
+	if task.PriorSessionUsageUnavailable {
+		result.Usage = nil
+	}
 
 	// Snapshot lifecycle (RUYI-669): the agent process is done, so the mounts
 	// it held died with its namespace. A completed run drops the snapshot
@@ -9571,6 +9599,8 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		}, nil
 	}
 }
+
+const maxPipeCrashConsecutiveFailures = 3
 
 func (d *Daemon) freshSessionRetryLoop(
 	ctx context.Context,

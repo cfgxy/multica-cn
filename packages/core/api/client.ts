@@ -449,7 +449,6 @@ import {
   AgentTaskListSchema,
   AgentRuntimeSchema,
   AgentRuntimeListSchema,
-  EMPTY_AGENT_RUNTIME,
   AttachmentResponseSchema,
   CancelTaskResponseSchema,
   ChatDraftRestoresResponseSchema,
