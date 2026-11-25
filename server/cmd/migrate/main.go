@@ -548,18 +548,27 @@ func reconcileRuntimeCostBudgetMigrationRenames(ctx context.Context, conn *pgxpo
 	if err := conn.QueryRow(ctx, query, targetVersions).Scan(&targetCount); err != nil {
 		return fmt.Errorf("count target runtime-cost-budget migration ledger: %w", err)
 	}
-	if legacyCount == 0 && targetCount == 0 {
+	if legacyCount == 0 && (targetCount == 0 || targetCount == len(targetVersions)) {
 		return nil
 	}
 	if legacyCount != len(legacyVersions) || targetCount != 0 {
 		return fmt.Errorf("runtime-cost-budget migration ledger is partial or mixed: legacy=%d/%d target=%d/%d", legacyCount, len(legacyVersions), targetCount, len(targetVersions))
 	}
 
-	for _, legacy := range legacyVersions {
+	args := make([]any, 0, len(legacyVersions)*2)
+	values := make([]string, 0, len(legacyVersions))
+	for i, legacy := range legacyVersions {
 		target := runtimeCostBudgetMigrationRenames[legacy]
-		if _, err := conn.Exec(ctx, fmt.Sprintf("UPDATE %s SET version = $1 WHERE version = $2", tableIdent), target, legacy); err != nil {
-			return fmt.Errorf("rename legacy runtime-cost-budget migration ledger %q to %q: %w", legacy, target, err)
-		}
+		values = append(values, fmt.Sprintf("($%d::text, $%d::text)", i*2+1, i*2+2))
+		args = append(args, legacy, target)
+	}
+	query = fmt.Sprintf(`
+		UPDATE %s AS ledger
+		SET version = replacement.target
+		FROM (VALUES %s) AS replacement(legacy, target)
+		WHERE ledger.version = replacement.legacy`, tableIdent, strings.Join(values, ", "))
+	if _, err := conn.Exec(ctx, query, args...); err != nil {
+		return fmt.Errorf("rename legacy runtime-cost-budget migration ledger: %w", err)
 	}
 	return nil
 }
