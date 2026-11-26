@@ -705,7 +705,10 @@
     "rerun_confirm_body": "同じエージェント上で現在の設定・新しいセッションで再実行します。この実行は履歴にそのまま残ります。",
     "rerun_confirm_keep": "そのままにする",
     "rerun_confirm_confirm": "再実行",
-    "unpriced_rows_other": "{{count}} 件は算出不可"
+    "unpriced_rows_other": "{{count}} 件は算出不可",
+    "day_today": "今日",
+    "day_yesterday": "昨日",
+    "day_runs_other": "{{count}} 回実行"
   },
   "usage_detail": {
     "title": "使用量の内訳",

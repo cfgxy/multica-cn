@@ -705,7 +705,10 @@
     "rerun_confirm_body": "동일한 에이전트에서 현재 설정과 새 세션으로 다시 실행합니다. 이 실행은 기록에 그대로 남습니다.",
     "rerun_confirm_keep": "그대로 두기",
     "rerun_confirm_confirm": "다시 실행",
-    "unpriced_rows_other": "미산출 {{count}}건"
+    "unpriced_rows_other": "미산출 {{count}}건",
+    "day_today": "오늘",
+    "day_yesterday": "어제",
+    "day_runs_other": "실행 {{count}}회"
   },
   "usage_detail": {
     "title": "사용량 내역",

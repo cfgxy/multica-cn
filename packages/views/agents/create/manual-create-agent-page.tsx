@@ -4,7 +4,7 @@ import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useWorkspaceId } from "@multica/core/hooks";
 import { useWorkspacePaths } from "@multica/core/paths";
-import { runtimeDisplayLabel } from "@multica/core/runtimes";
+import { defaultAgentRuntime, runtimeDisplayLabel } from "@multica/core/runtimes";
 import { agentListOptions } from "@multica/core/workspace/queries";
 import { useBackOrReplace, useNavigation } from "../../navigation";
 import { useT } from "../../i18n";
