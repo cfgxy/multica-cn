@@ -124,10 +124,10 @@ func (h *Handler) DecideKnowledgeGovernanceOpinion(w http.ResponseWriter, r *htt
 		return
 	}
 	defer tx.Rollback(r.Context())
-	var entryID pgtype.UUID
+	var entryID, dirID pgtype.UUID
 	var targetVersion int32
 	var targetSHA, status, opinionAction, proposedContent string
-	if err := tx.QueryRow(r.Context(), `SELECT entry_id, target_version, target_content_sha256, status, action, proposed_content FROM knowledge_governance_opinion WHERE id = $1 AND workspace_id = $2 FOR UPDATE`, opinionID, workspaceID).Scan(&entryID, &targetVersion, &targetSHA, &status, &opinionAction, &proposedContent); errors.Is(err, pgx.ErrNoRows) {
+	if err := tx.QueryRow(r.Context(), `SELECT entry_id, dir_id, target_version, target_content_sha256, status, action, proposed_content FROM knowledge_governance_opinion WHERE id = $1 AND workspace_id = $2 FOR UPDATE`, opinionID, workspaceID).Scan(&entryID, &dirID, &targetVersion, &targetSHA, &status, &opinionAction, &proposedContent); errors.Is(err, pgx.ErrNoRows) {
 		writeError(w, http.StatusNotFound, "governance opinion not found")
 		return
 	} else if err != nil {
@@ -157,46 +157,105 @@ func (h *Handler) DecideKnowledgeGovernanceOpinion(w http.ResponseWriter, r *htt
 	newStatus := "approved"
 	if action == "reject" {
 		newStatus = "rejected"
-	} else if opinionAction == "revise" {
-		nextVersion := targetVersion + 1
-		contentSHA := knowledgeContentSHA(proposedContent)
-		var versionID pgtype.UUID
-		if err := tx.QueryRow(r.Context(), `INSERT INTO knowledge_entry_version (workspace_id, entry_id, version, content, content_sha256, source, created_by)
-VALUES ($1, $2, $3, $4, $5, 'governance', $6) RETURNING id`, workspaceID, entryID, nextVersion, proposedContent, contentSHA, actorID).Scan(&versionID); err != nil {
-			writeError(w, http.StatusInternalServerError, "failed to version approved governance revision")
-			return
-		}
-		if _, err := tx.Exec(r.Context(), `UPDATE knowledge_entry SET content = $2, content_sha256 = $3, current_version = $4, last_confirmed_at = now(), mirror_state = 'synced' WHERE id = $1 AND workspace_id = $5`, entryID, proposedContent, contentSHA, nextVersion, workspaceID); err != nil {
-			writeError(w, http.StatusInternalServerError, "failed to apply approved governance revision")
-			return
-		}
-		var eventID pgtype.UUID
-		if err := tx.QueryRow(r.Context(), `INSERT INTO knowledge_lifecycle_event (workspace_id, entry_id, from_state, to_state, operation, reason, evidence_ref, version_id, actor_id, completed_at)
-SELECT $1, $2, lifecycle_state, lifecycle_state, 'transition', 'approved governance revision', 'governance_opinion:' || $3::text, $4, $5, now() FROM knowledge_entry WHERE id = $2 RETURNING id`, workspaceID, entryID, opinionID, versionID, actorID).Scan(&eventID); err != nil {
-			writeError(w, http.StatusInternalServerError, "failed to audit approved governance revision")
-			return
-		}
-		if _, err := tx.Exec(r.Context(), `UPDATE knowledge_governance_opinion SET lifecycle_event_id = $2 WHERE id = $1`, opinionID, eventID); err != nil {
-			writeError(w, http.StatusInternalServerError, "failed to link governance revision audit")
-			return
-		}
-		newStatus = "applied"
 	} else {
-		if _, err := tx.Exec(r.Context(), `UPDATE knowledge_entry SET lifecycle_state = 'deprecated' WHERE id = $1 AND workspace_id = $2`, entryID, workspaceID); err != nil {
-			writeError(w, http.StatusInternalServerError, "failed to apply approved governance deletion")
-			return
+		var dirKind string
+		var projectID pgtype.UUID
+		var managedActive, removed bool
+		isManaged := false
+		if err := tx.QueryRow(r.Context(), `SELECT kind, project_id, managed_active, removed FROM knowledge_dir WHERE id = $1 AND workspace_id = $2`, dirID, workspaceID).Scan(&dirKind, &projectID, &managedActive, &removed); err == nil {
+			isManaged = dirKind == "candidate_cli" && !projectID.Valid && managedActive && !removed
 		}
-		var eventID pgtype.UUID
-		if err := tx.QueryRow(r.Context(), `INSERT INTO knowledge_lifecycle_event (workspace_id, entry_id, from_state, to_state, operation, reason, evidence_ref, actor_id, completed_at)
+
+		if isManaged {
+			if opinionAction == "revise" {
+				nextVersion := targetVersion + 1
+				contentSHA := knowledgeContentSHA(proposedContent)
+				var versionID pgtype.UUID
+				if err := tx.QueryRow(r.Context(), `INSERT INTO knowledge_entry_version (workspace_id, entry_id, version, content, content_sha256, source, created_by)
+VALUES ($1, $2, $3, $4, $5, 'governance', $6) RETURNING id`, workspaceID, entryID, nextVersion, proposedContent, contentSHA, actorID).Scan(&versionID); err != nil {
+					writeError(w, http.StatusInternalServerError, "failed to version approved governance revision")
+					return
+				}
+				if _, err := tx.Exec(r.Context(), `UPDATE knowledge_entry SET writeback_state = 'queued', writeback_error = '' WHERE id = $1 AND workspace_id = $2`, entryID, workspaceID); err != nil {
+					writeError(w, http.StatusInternalServerError, "failed to queue entry writeback")
+					return
+				}
+				var eventID pgtype.UUID
+				if err := tx.QueryRow(r.Context(), `INSERT INTO knowledge_lifecycle_event (workspace_id, entry_id, from_state, to_state, operation, reason, evidence_ref, version_id, expected_content_sha256, writeback_state, actor_id)
+SELECT $1, $2, lifecycle_state, lifecycle_state, 'writeback_restore', 'approved governance revision', 'governance_opinion:' || $3::text, $4, $5, 'queued', $6 FROM knowledge_entry WHERE id = $2 RETURNING id`, workspaceID, entryID, opinionID, versionID, targetSHA, actorID).Scan(&eventID); err != nil {
+					writeError(w, http.StatusInternalServerError, "failed to audit approved governance revision")
+					return
+				}
+				if _, err := tx.Exec(r.Context(), `UPDATE knowledge_governance_opinion SET lifecycle_event_id = $2 WHERE id = $1`, opinionID, eventID); err != nil {
+					writeError(w, http.StatusInternalServerError, "failed to link governance revision audit")
+					return
+				}
+				newStatus = "applying"
+			} else {
+				if _, err := tx.Exec(r.Context(), `UPDATE knowledge_entry SET lifecycle_state = 'deprecated', writeback_state = 'queued', writeback_error = '' WHERE id = $1 AND workspace_id = $2`, entryID, workspaceID); err != nil {
+					writeError(w, http.StatusInternalServerError, "failed to apply approved governance deletion")
+					return
+				}
+				var currentVersionID pgtype.UUID
+				if err := tx.QueryRow(r.Context(), `SELECT id FROM knowledge_entry_version WHERE entry_id = $1 AND workspace_id = $2 AND version = $3`, entryID, workspaceID, targetVersion).Scan(&currentVersionID); err != nil {
+					writeError(w, http.StatusInternalServerError, "failed to find current version for deletion writeback")
+					return
+				}
+				var eventID pgtype.UUID
+				if err := tx.QueryRow(r.Context(), `INSERT INTO knowledge_lifecycle_event (workspace_id, entry_id, from_state, to_state, operation, reason, evidence_ref, version_id, expected_content_sha256, writeback_state, actor_id)
+VALUES ($1, $2, 'active', 'deprecated', 'writeback_remove', 'approved governance deletion', 'governance_opinion:' || $3::text, $4, $5, 'queued', $6) RETURNING id`, workspaceID, entryID, opinionID, currentVersionID, targetSHA, actorID).Scan(&eventID); err != nil {
+					writeError(w, http.StatusInternalServerError, "failed to audit approved governance deletion")
+					return
+				}
+				if _, err := tx.Exec(r.Context(), `UPDATE knowledge_governance_opinion SET lifecycle_event_id = $2 WHERE id = $1`, opinionID, eventID); err != nil {
+					writeError(w, http.StatusInternalServerError, "failed to link governance deletion audit")
+					return
+				}
+				newStatus = "applying"
+			}
+		} else {
+			if opinionAction == "revise" {
+				nextVersion := targetVersion + 1
+				contentSHA := knowledgeContentSHA(proposedContent)
+				var versionID pgtype.UUID
+				if err := tx.QueryRow(r.Context(), `INSERT INTO knowledge_entry_version (workspace_id, entry_id, version, content, content_sha256, source, created_by)
+VALUES ($1, $2, $3, $4, $5, 'governance', $6) RETURNING id`, workspaceID, entryID, nextVersion, proposedContent, contentSHA, actorID).Scan(&versionID); err != nil {
+					writeError(w, http.StatusInternalServerError, "failed to version approved governance revision")
+					return
+				}
+				if _, err := tx.Exec(r.Context(), `UPDATE knowledge_entry SET content = $2, content_sha256 = $3, current_version = $4, last_confirmed_at = now(), mirror_state = 'synced' WHERE id = $1 AND workspace_id = $5`, entryID, proposedContent, contentSHA, nextVersion, workspaceID); err != nil {
+					writeError(w, http.StatusInternalServerError, "failed to apply approved governance revision")
+					return
+				}
+				var eventID pgtype.UUID
+				if err := tx.QueryRow(r.Context(), `INSERT INTO knowledge_lifecycle_event (workspace_id, entry_id, from_state, to_state, operation, reason, evidence_ref, version_id, actor_id, completed_at)
+SELECT $1, $2, lifecycle_state, lifecycle_state, 'transition', 'approved governance revision', 'governance_opinion:' || $3::text, $4, $5, now() FROM knowledge_entry WHERE id = $2 RETURNING id`, workspaceID, entryID, opinionID, versionID, actorID).Scan(&eventID); err != nil {
+					writeError(w, http.StatusInternalServerError, "failed to audit approved governance revision")
+					return
+				}
+				if _, err := tx.Exec(r.Context(), `UPDATE knowledge_governance_opinion SET lifecycle_event_id = $2 WHERE id = $1`, opinionID, eventID); err != nil {
+					writeError(w, http.StatusInternalServerError, "failed to link governance revision audit")
+					return
+				}
+				newStatus = "applied"
+			} else {
+				if _, err := tx.Exec(r.Context(), `UPDATE knowledge_entry SET lifecycle_state = 'deprecated' WHERE id = $1 AND workspace_id = $2`, entryID, workspaceID); err != nil {
+					writeError(w, http.StatusInternalServerError, "failed to apply approved governance deletion")
+					return
+				}
+				var eventID pgtype.UUID
+				if err := tx.QueryRow(r.Context(), `INSERT INTO knowledge_lifecycle_event (workspace_id, entry_id, from_state, to_state, operation, reason, evidence_ref, actor_id, completed_at)
 VALUES ($1, $2, 'active', 'deprecated', 'transition', 'approved governance deletion', 'governance_opinion:' || $3::text, $4, now()) RETURNING id`, workspaceID, entryID, opinionID, actorID).Scan(&eventID); err != nil {
-			writeError(w, http.StatusInternalServerError, "failed to audit approved governance deletion")
-			return
+					writeError(w, http.StatusInternalServerError, "failed to audit approved governance deletion")
+					return
+				}
+				if _, err := tx.Exec(r.Context(), `UPDATE knowledge_governance_opinion SET lifecycle_event_id = $2 WHERE id = $1`, opinionID, eventID); err != nil {
+					writeError(w, http.StatusInternalServerError, "failed to link governance deletion audit")
+					return
+				}
+				newStatus = "applied"
+			}
 		}
-		if _, err := tx.Exec(r.Context(), `UPDATE knowledge_governance_opinion SET lifecycle_event_id = $2 WHERE id = $1`, opinionID, eventID); err != nil {
-			writeError(w, http.StatusInternalServerError, "failed to link governance deletion audit")
-			return
-		}
-		newStatus = "applied"
 	}
 	if _, err := tx.Exec(r.Context(), `UPDATE knowledge_governance_opinion SET status = $2, decided_by = $3, decided_at = now(), updated_at = now() WHERE id = $1`, opinionID, newStatus, actorID); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to decide governance opinion")

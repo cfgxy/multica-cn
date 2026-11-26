@@ -208,6 +208,11 @@ WHERE e.id = $1 AND e.writeback_state = 'in_progress'
   )`, target.entryID, state, target.eventID); err != nil {
 			return nil, err
 		}
+		if cancel {
+			if _, err := tx.Exec(ctx, `UPDATE knowledge_governance_opinion SET status = 'failed', error = 'write-back claim cancelled', updated_at = now() WHERE lifecycle_event_id = $1 AND status = 'applying'`, target.eventID); err != nil {
+				return nil, err
+			}
+		}
 	}
 
 	pendingRows, err := tx.Query(ctx, `
@@ -939,33 +944,50 @@ UPDATE knowledge_lifecycle_event SET writeback_state = $2, writeback_error = $3,
 		}
 		if writeback.OK {
 			if operation == "writeback_restore" {
-				var nextVersion int
-				if err := tx.QueryRow(r.Context(), `
-SELECT current_version + 1 FROM knowledge_entry
-WHERE id = $1 AND workspace_id = $2`, entryID, workspaceID).Scan(&nextVersion); err != nil {
+				var versionSource string
+				if err := tx.QueryRow(r.Context(), `SELECT source FROM knowledge_entry_version WHERE id = $1`, sourceVersionID).Scan(&versionSource); err != nil {
 					_ = tx.Rollback(r.Context())
 					continue
 				}
-				tag, err = tx.Exec(r.Context(), `
+				if versionSource == "governance" {
+					tag, err = tx.Exec(r.Context(), `
+UPDATE knowledge_entry AS e SET content = v.content, content_sha256 = v.content_sha256,
+	    current_version = v.version, lifecycle_state = 'active',
+	    mirror_state = CASE WHEN d.removed THEN 'source_removed' ELSE 'synced' END,
+	    missing_confirmation = 0, writeback_state = 'succeeded', writeback_error = '',
+	    last_confirmed_at = now()
+FROM knowledge_entry_version AS v, knowledge_dir AS d
+WHERE e.id = $1 AND e.workspace_id = $2 AND v.id = $3 AND d.id = e.dir_id`,
+						entryID, workspaceID, sourceVersionID)
+				} else {
+					var nextVersion int
+					if err := tx.QueryRow(r.Context(), `
+SELECT current_version + 1 FROM knowledge_entry
+WHERE id = $1 AND workspace_id = $2`, entryID, workspaceID).Scan(&nextVersion); err != nil {
+						_ = tx.Rollback(r.Context())
+						continue
+					}
+					tag, err = tx.Exec(r.Context(), `
 INSERT INTO knowledge_entry_version (workspace_id, entry_id, version, content, content_sha256, source, created_by)
 SELECT e.workspace_id, e.id, $3, v.content, v.content_sha256, 'restore', le.actor_id
 FROM knowledge_lifecycle_event le
 JOIN knowledge_entry e ON e.id = le.entry_id
 JOIN knowledge_entry_version v ON v.id = le.version_id
 WHERE le.id = $1 AND le.entry_id = $2`, eventID, entryID, nextVersion)
-				if err != nil || tag.RowsAffected() != 1 {
-					_ = tx.Rollback(r.Context())
-					continue
-				}
-				tag, err = tx.Exec(r.Context(), `
+					if err != nil || tag.RowsAffected() != 1 {
+						_ = tx.Rollback(r.Context())
+						continue
+					}
+					tag, err = tx.Exec(r.Context(), `
 UPDATE knowledge_entry AS e SET content = v.content, content_sha256 = v.content_sha256,
 	    current_version = $3, lifecycle_state = 'active',
 	    mirror_state = CASE WHEN d.removed THEN 'source_removed' ELSE 'synced' END,
-    missing_confirmation = 0, writeback_state = 'succeeded', writeback_error = '',
-    last_confirmed_at = now()
+	    missing_confirmation = 0, writeback_state = 'succeeded', writeback_error = '',
+	    last_confirmed_at = now()
 FROM knowledge_entry_version AS v, knowledge_dir AS d
-	WHERE e.id = $1 AND e.workspace_id = $2 AND v.id = $4 AND d.id = e.dir_id`,
-					entryID, workspaceID, nextVersion, sourceVersionID)
+WHERE e.id = $1 AND e.workspace_id = $2 AND v.id = $4 AND d.id = e.dir_id`,
+						entryID, workspaceID, nextVersion, sourceVersionID)
+				}
 			} else {
 				tag, err = tx.Exec(r.Context(), `
 UPDATE knowledge_entry SET mirror_state = $2, missing_confirmation = $3,
@@ -973,10 +995,16 @@ UPDATE knowledge_entry SET mirror_state = $2, missing_confirmation = $3,
 	WHERE id = $1 AND workspace_id = $4`,
 					entryID, "source_deleted", 2, workspaceID)
 			}
+			if err == nil {
+				_, _ = tx.Exec(r.Context(), `UPDATE knowledge_governance_opinion SET status = 'applied', updated_at = now() WHERE lifecycle_event_id = $1 AND status = 'applying'`, eventID)
+			}
 		} else {
 			tag, err = tx.Exec(r.Context(), `
 	UPDATE knowledge_entry SET writeback_state = 'failed', writeback_error = $2
 	WHERE id = $1 AND workspace_id = $3`, entryID, writeback.Error, workspaceID)
+			if err == nil {
+				_, _ = tx.Exec(r.Context(), `UPDATE knowledge_governance_opinion SET status = 'failed', error = $2, updated_at = now() WHERE lifecycle_event_id = $1 AND status = 'applying'`, eventID, writeback.Error)
+			}
 		}
 		if err != nil || tag.RowsAffected() != 1 {
 			_ = tx.Rollback(r.Context())
