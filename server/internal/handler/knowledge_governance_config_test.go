@@ -3,6 +3,7 @@ package handler
 import (
 	"encoding/json"
 	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 
@@ -81,6 +82,36 @@ func TestKnowledgeGovernanceConfigIsolatedAndAudited(t *testing.T) {
 	code, body = governanceConfigCall(t, governanceConfigRoute(testHandler.UpdateKnowledgeGovernanceConfig).ServeHTTP, memberID, wsID, map[string]any{"enabled": false})
 	if code != http.StatusForbidden {
 		t.Fatalf("ordinary member update: expected 403, got %d: %s", code, body)
+	}
+}
+
+func TestKnowledgeGovernanceConfigSerializesConcurrentSaves(t *testing.T) {
+	wsID, ownerID, _ := legislationFixture(t)
+	defer testPool.Exec(t.Context(), `DELETE FROM knowledge_governance_config_audit WHERE workspace_id = $1`, wsID)
+	defer testPool.Exec(t.Context(), `DELETE FROM knowledge_governance_config WHERE workspace_id = $1`, wsID)
+	agentID := retroAgent(t, wsID, "concurrent governance executor")
+	route := governanceConfigRoute(testHandler.UpdateKnowledgeGovernanceConfig).ServeHTTP
+	responses := make(chan int, 2)
+	for _, cadence := range []string{"daily", "monthly"} {
+		go func(cadence string) {
+			w := httptest.NewRecorder()
+			route(w, legislationReq(ownerID, wsID, http.MethodPut, "/api/knowledge/governance/config", map[string]any{
+				"enabled": true, "agent_id": agentID, "cadence": cadence, "timezone": "UTC",
+			}))
+			responses <- w.Code
+		}(cadence)
+	}
+	for range 2 {
+		if code := <-responses; code != http.StatusOK {
+			t.Fatalf("concurrent save status = %d, want 200", code)
+		}
+	}
+	var count, minVersion, maxVersion int
+	dbfx.QueryRow(t, `
+SELECT count(*), min(config_version), max(config_version)
+FROM knowledge_governance_config_audit WHERE workspace_id = $1`, wsID).Scan(&count, &minVersion, &maxVersion)
+	if count != 2 || minVersion != 1 || maxVersion != 2 {
+		t.Fatalf("concurrent saves must allocate distinct serial versions; count=%d range=%d..%d", count, minVersion, maxVersion)
 	}
 }
 
