@@ -172,6 +172,12 @@ describe.each(SURFACES)("sanitize contract — $name", ({ render: renderSurface 
 
     expect(container.querySelector(".slash-command")?.textContent).toBe("/deploy");
   });
+
+  it("preserves attachment:// image src across sanitize", () => {
+    const container = renderSurface("![shot](attachment://shot.png)");
+
+    expect(container.querySelector("img")).toHaveAttribute("src", "attachment://shot.png");
+  });
 });
 
 // Code-block *rendering* is deliberately not asserted cross-surface yet: chat

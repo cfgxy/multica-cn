@@ -1234,4 +1234,33 @@ describe("Attachment — blob URL GC (MUL-7741)", () => {
     // exercised by the sibling tests above.
     expect(revokeObjectURLMock).not.toHaveBeenCalled();
   });
+
+  it("does not leak raw attachment:// URLs to <img src> or openExternal when unresolved", () => {
+    renderWithQuery(
+      <Attachment
+        attachment={{
+          kind: "url",
+          url: "attachment://missing.png",
+          filename: "missing.png",
+          forceKind: "image",
+        }}
+      />,
+    );
+    const img = document.querySelector("img");
+    expect(img).toBeTruthy();
+    expect(img?.getAttribute("src")).toBeNull();
+    expect(screen.queryByTitle("Download")).toBeNull();
+
+    renderWithQuery(
+      <Attachment
+        attachment={{
+          kind: "url",
+          url: "attachment://missing.pdf",
+          filename: "missing.pdf",
+        }}
+      />,
+    );
+    expect(openByUrlMock).not.toHaveBeenCalled();
+    expect(openExternalMock).not.toHaveBeenCalled();
+  });
 });

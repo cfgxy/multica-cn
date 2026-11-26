@@ -251,7 +251,7 @@ export function MarkdownRendererAdapter({
   // drop) them.
   const onLinkPress = useCallback(
     ({ url }: { url: string }) => {
-      const action = resolveLinkAction(url, wsSlug ?? null);
+      const action = resolveLinkAction(url, wsSlug ?? null, attachments);
       if (action.kind === "pullRequest" || action.kind === "mergeRequest") {
         const state = linkIntent.current;
         const key = `${wsId ?? ""}:${action.kind}:${action.number}`;
@@ -316,7 +316,7 @@ export function MarkdownRendererAdapter({
           return;
       }
     },
-    [wsSlug, commentAnchor, wsId, renderer],
+    [wsSlug, commentAnchor, wsId, renderer, attachments],
   );
 
   if (segments.length === 0) return null;

@@ -464,57 +464,74 @@ type AttachmentResponse struct {
 }
 
 // UploadFile uploads a file via multipart form to /api/upload-file.
-// It returns the attachment ID from the server response.
-func (c *APIClient) UploadFile(ctx context.Context, fileData []byte, filename string, issueID string) (string, error) {
+// It returns the full AttachmentResponse from the server response, falling back
+// to filepath.Base(filename) and /api/attachments/<id>/download when a legacy
+// server or minimal test stub omits those fields.
+func (c *APIClient) UploadFile(ctx context.Context, fileData []byte, filename string, issueID string) (AttachmentResponse, error) {
 	var body bytes.Buffer
 	writer := multipart.NewWriter(&body)
 
 	part, err := writer.CreateFormFile("file", filepath.Base(filename))
 	if err != nil {
-		return "", fmt.Errorf("create form file: %w", err)
+		return AttachmentResponse{}, fmt.Errorf("create form file: %w", err)
 	}
 	if _, err := part.Write(fileData); err != nil {
-		return "", fmt.Errorf("write file data: %w", err)
+		return AttachmentResponse{}, fmt.Errorf("write file data: %w", err)
 	}
 
 	if issueID != "" {
 		if err := writer.WriteField("issue_id", issueID); err != nil {
-			return "", fmt.Errorf("write issue_id field: %w", err)
+			return AttachmentResponse{}, fmt.Errorf("write issue_id field: %w", err)
 		}
 	}
 
 	if err := writer.Close(); err != nil {
-		return "", fmt.Errorf("close multipart writer: %w", err)
+		return AttachmentResponse{}, fmt.Errorf("close multipart writer: %w", err)
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.BaseURL+"/api/upload-file", &body)
 	if err != nil {
-		return "", err
+		return AttachmentResponse{}, err
 	}
 	req.Header.Set("Content-Type", writer.FormDataContentType())
 	c.setHeaders(req)
 
-	resp, err := c.HTTPClient.Do(req)
+	// Honor a longer context deadline for slow uploads, mirroring UploadChatAttachment.
+	httpClient := c.HTTPClient
+	if deadline, ok := ctx.Deadline(); ok {
+		remaining := time.Until(deadline)
+		if remaining > httpClient.Timeout {
+			clientCopy := *httpClient
+			clientCopy.Timeout = remaining
+			httpClient = &clientCopy
+		}
+	}
+
+	resp, err := httpClient.Do(req)
 	err = wrapTransport(req, err)
 	if err != nil {
-		return "", err
+		return AttachmentResponse{}, err
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode >= 400 {
-		return "", newHTTPError(http.MethodPost, "/api/upload-file", resp)
+		return AttachmentResponse{}, newHTTPError(http.MethodPost, "/api/upload-file", resp)
 	}
 
-	var result map[string]any
+	var result AttachmentResponse
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return "", fmt.Errorf("decode upload response: %w", err)
+		return AttachmentResponse{}, fmt.Errorf("decode upload response: %w", err)
 	}
-
-	id, _ := result["id"].(string)
-	if id == "" {
-		return "", fmt.Errorf("upload response missing attachment id")
+	if result.ID == "" {
+		return AttachmentResponse{}, fmt.Errorf("upload response missing attachment id")
 	}
-	return id, nil
+	if result.Filename == "" {
+		result.Filename = filepath.Base(filename)
+	}
+	if result.MarkdownURL == "" {
+		result.MarkdownURL = "/api/attachments/" + result.ID + "/download"
+	}
+	return result, nil
 }
 
 // UploadChatAttachment uploads a file via multipart form to /api/upload-file
