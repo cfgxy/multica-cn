@@ -740,6 +740,15 @@ FROM agent_runtime r
 LEFT JOIN agent_task_queue t
   ON t.runtime_id = r.id
  AND t.status IN ('dispatched', 'running', 'waiting_local_directory')
+ AND NOT (
+     t.originator_source = 'quiz'
+     AND COALESCE((
+         SELECT c.enabled FROM prompt_quiz_schedule_control c
+         JOIN agent a ON a.workspace_id = c.workspace_id
+         WHERE a.id = t.agent_id AND (c.agent_id IS NULL OR c.agent_id = a.id)
+         ORDER BY c.agent_id NULLS LAST LIMIT 1
+     ), TRUE) = FALSE
+ )
 WHERE r.id = $1
 GROUP BY r.id
 `

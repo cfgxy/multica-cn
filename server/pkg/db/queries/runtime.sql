@@ -62,6 +62,17 @@ FROM agent_runtime r
 LEFT JOIN agent_task_queue t
   ON t.runtime_id = r.id
  AND t.status IN ('dispatched', 'running', 'waiting_local_directory')
+ -- A disabled Quiz run is permitted to drain for collection but must never
+ -- consume capacity needed by ordinary work after the control-plane disable.
+ AND NOT (
+     t.originator_source = 'quiz'
+     AND COALESCE((
+         SELECT c.enabled FROM prompt_quiz_schedule_control c
+         JOIN agent a ON a.workspace_id = c.workspace_id
+         WHERE a.id = t.agent_id AND (c.agent_id IS NULL OR c.agent_id = a.id)
+         ORDER BY c.agent_id NULLS LAST LIMIT 1
+     ), TRUE) = FALSE
+ )
 WHERE r.id = @runtime_id
 GROUP BY r.id;
 

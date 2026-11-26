@@ -9,7 +9,7 @@ import (
 )
 
 func TestPromptQuizAgentScopePersistsExplicitEmptyAndAudit(t *testing.T) {
-	wsID, ownerID, _ := legislationFixture(t)
+	wsID, ownerID, plainMemberID := legislationFixture(t)
 	agentID := retroAgent(t, wsID, "scope executor")
 	itemID := dbfx.Insert(t, "prompt_quiz_item", map[string]any{
 		"workspace_id": wsID, "slug": "scope-item-" + agentID[:8], "title": "scope item", "body": "scope body", "runtime_profile": "member",
@@ -29,9 +29,17 @@ func TestPromptQuizAgentScopePersistsExplicitEmptyAndAudit(t *testing.T) {
 	route := middleware.RequireWorkspaceRole(testHandler.Queries, "owner", "admin")(http.HandlerFunc(testHandler.PutPromptQuizAgentScope))
 	put := func(userID string, ids []string) (int, string) {
 		req := withURLParam(legislationReq(userID, wsID, http.MethodPut, "/api/prompt-quiz/agents/"+agentID+"/scope", map[string]any{"item_ids": ids}), "agentId", agentID)
+		// newRequest carries the shared fixture slug; production clients send a
+		// single workspace locator, and the router prioritises slug over ID.
+		req.Header.Del("X-Workspace-Slug")
 		return legislationCall(t, route.ServeHTTP, req)
 	}
-	if code, body := put(memberID, []string{}); code != http.StatusForbidden {
+	var memberRows int
+	dbfx.QueryRow(t, `SELECT count(*) FROM member WHERE workspace_id=$1 AND user_id=$2`, wsID, plainMemberID).Scan(&memberRows)
+	if memberRows != 1 {
+		t.Fatalf("member fixture missing: %d", memberRows)
+	}
+	if code, body := put(plainMemberID, []string{}); code != http.StatusForbidden {
 		t.Fatalf("member scope write = %d: %s", code, body)
 	}
 	if code, body := put(adminID, []string{}); code != http.StatusOK {
