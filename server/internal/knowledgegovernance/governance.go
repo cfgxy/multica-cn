@@ -182,6 +182,35 @@ type ScheduleTarget struct {
 	Timezone       string
 	ConfigVersion  int32
 	ScheduleBucket string
+	EvaluatedAt    time.Time
+}
+
+// NextSchedule returns the first local schedule boundary strictly after now.
+// It is used when a configuration version is saved and the resulting value is
+// persisted as its eligibility anchor. Go's location rules make skipped and
+// repeated DST wall-clock times deterministic; all boundaries are local
+// midnight, with ISO weeks beginning Monday and calendar months beginning on
+// the first day.
+func NextSchedule(now time.Time, cadence, timezone string) (time.Time, error) {
+	loc, err := time.LoadLocation(timezone)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("invalid timezone %q: %w", timezone, err)
+	}
+	local := now.In(loc)
+	switch cadence {
+	case "daily":
+		return time.Date(local.Year(), local.Month(), local.Day()+1, 0, 0, 0, 0, loc), nil
+	case "weekly":
+		days := (int(time.Monday) - int(local.Weekday()) + 7) % 7
+		if days == 0 {
+			days = 7
+		}
+		return time.Date(local.Year(), local.Month(), local.Day()+days, 0, 0, 0, 0, loc), nil
+	case "monthly":
+		return time.Date(local.Year(), local.Month()+1, 1, 0, 0, 0, 0, loc), nil
+	default:
+		return time.Time{}, fmt.Errorf("invalid cadence %q", cadence)
+	}
 }
 
 // scheduleBucket is the durable, local-time execution window. ISO weeks start
@@ -211,6 +240,7 @@ func scheduleBucket(now time.Time, cadence, timezone string) (string, error) {
 // schedule bucket. Claiming happens inside RunScheduledWorkspace's enqueue
 // transaction; list reads are intentionally not themselves a concurrency gate.
 func (r *Runner) ListScheduleTargets(ctx context.Context) ([]ScheduleTarget, error) {
+	now := r.now()
 	rows, err := r.DB.Query(ctx, `
 SELECT d.workspace_id, d.id AS dir_id, manager.user_id AS actor_id, c.cadence, c.timezone, c.version
 FROM knowledge_dir d
@@ -226,14 +256,14 @@ JOIN LATERAL (
     LIMIT 1
 ) manager ON TRUE
 WHERE d.removed = FALSE
+  AND c.next_eligible_at <= $1
   AND EXISTS (SELECT 1 FROM knowledge_entry e WHERE e.dir_id = d.id)
-ORDER BY d.workspace_id ASC, d.created_at ASC, d.id ASC`)
+ORDER BY d.workspace_id ASC, d.created_at ASC, d.id ASC`, now)
 	if err != nil {
 		return nil, fmt.Errorf("knowledge governance: list schedule targets: %w", err)
 	}
 	defer rows.Close()
 	targets := []ScheduleTarget{}
-	now := r.now()
 	for rows.Next() {
 		var workspaceID, dirID, actorID pgtype.UUID
 		var target ScheduleTarget
@@ -245,6 +275,7 @@ ORDER BY d.workspace_id ASC, d.created_at ASC, d.id ASC`)
 			return nil, fmt.Errorf("knowledge governance: schedule target: %w", bucketErr)
 		}
 		target.ScheduleBucket = bucket
+		target.EvaluatedAt = now
 		target.WorkspaceID = util.UUIDToString(workspaceID)
 		target.DirID = util.UUIDToString(dirID)
 		target.ActorID = util.UUIDToString(actorID)
@@ -407,8 +438,9 @@ SELECT a.id, a.runtime_id
 FROM knowledge_governance_config c
 JOIN agent a ON a.id = c.agent_id
 WHERE c.workspace_id = $1 AND c.version = $2 AND c.enabled = TRUE
+  AND c.next_eligible_at <= $3
   AND a.workspace_id = $1 AND a.archived_at IS NULL AND a.runtime_id IS NOT NULL
-FOR KEY SHARE OF c`, ws, scheduled.ConfigVersion).Scan(&agentID, &runtimeID)
+FOR KEY SHARE OF c`, ws, scheduled.ConfigVersion, scheduled.EvaluatedAt).Scan(&agentID, &runtimeID)
 	}
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNoExecutor
