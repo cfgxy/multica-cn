@@ -63,6 +63,8 @@ export {
   knowledgeEntryVersionsOptions,
   knowledgeEntryLifecycleOptions,
   knowledgeGovernanceConfigOptions,
+  knowledgeGovernanceOpinionsOptions,
+  useDecideKnowledgeGovernanceOpinion,
   knowledgeGovernanceRunsOptions,
   knowledgeGovernanceRunOptions,
   useRegisterKnowledgeDir,

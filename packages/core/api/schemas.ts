@@ -5553,6 +5553,16 @@ export const KnowledgeGovernanceFindingSchema = z.object({
   created_at: z.string().default(""),
 }).loose();
 
+export const KnowledgeGovernanceOpinionSchema = z.object({
+  id: z.string().default(""), dir_id: z.string().default(""), entry_id: z.string().default(""),
+  run_id: z.string().default(""), finding_id: z.string().default(""),
+  action: z.enum(["revise", "delete"]).catch("revise"), proposed_content: z.string().default(""),
+  target_version: z.number().int().default(0), target_content_sha256: z.string().default(""),
+  status: z.enum(["pending", "approved", "rejected", "applying", "applied", "stale", "failed", "unknown"]).catch("unknown"),
+  created_at: z.string().default(""),
+}).loose();
+
+export const KnowledgeGovernanceOpinionListResponseSchema = z.object({ opinions: z.array(KnowledgeGovernanceOpinionSchema).default([]) }).loose();
 export const KnowledgeGovernanceRunListResponseSchema = z.object({
   runs: z.array(KnowledgeGovernanceRunSchema).default([]),
 }).loose();

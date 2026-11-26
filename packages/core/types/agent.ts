@@ -1424,6 +1424,20 @@ export interface KnowledgeGovernanceConfig {
   audit: KnowledgeGovernanceConfigAudit[];
 }
 
+export interface KnowledgeGovernanceOpinion {
+  id: string;
+  dir_id: string;
+  entry_id: string;
+  run_id: string;
+  finding_id: string;
+  action: "revise" | "delete";
+  proposed_content: string;
+  target_version: number;
+  target_content_sha256: string;
+  status: "pending" | "approved" | "rejected" | "applying" | "applied" | "stale" | "failed" | "unknown";
+  created_at: string;
+}
+
 /** One asynchronous, advisory review of a mirrored knowledge directory. */
 export interface KnowledgeGovernanceRun {
   id: string;

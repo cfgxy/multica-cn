@@ -74,6 +74,7 @@ export type {
   RestoreKnowledgeEntryRequest,
   KnowledgeGovernanceConfig,
   KnowledgeGovernanceConfigAudit,
+  KnowledgeGovernanceOpinion,
   KnowledgeGovernanceRun,
   KnowledgeGovernanceFinding,
   KnowledgeGovernanceRunDetail,
