@@ -4,6 +4,7 @@ import { act, fireEvent, render, screen, waitFor, within } from "@testing-librar
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { Issue, IssueStatusEntry, Label, TimelineEntry } from "@multica/core/types";
 import type { TimelineQueryData, TimelineTruncationKind } from "@multica/core/issues/timeline-query";
+import { issueKeys } from "@multica/core/issues/queries";
 import { issueStatusKeys } from "@multica/core/issue-statuses";
 import { COMMENT_HIGHLIGHT_HOLD_MS } from "@multica/core/issues/comment-highlight";
 import { configStore } from "@multica/core/config";
@@ -672,13 +673,14 @@ function createTestQueryClient() {
 
 function renderIssueDetail(issueId = "issue-1") {
   const queryClient = createTestQueryClient();
-  return render(
+  const result = render(
     <I18nProvider locale="en" resources={TEST_RESOURCES}>
       <QueryClientProvider client={queryClient}>
         <IssueDetail issueId={issueId} />
       </QueryClientProvider>
     </I18nProvider>,
   );
+  return { ...result, queryClient };
 }
 
 /**
@@ -1625,13 +1627,17 @@ describe("IssueDetail (shared)", () => {
       },
     ]);
 
-    renderIssueDetail();
+    const { queryClient } = renderIssueDetail();
+    const invalidateTasks = vi.spyOn(queryClient, "invalidateQueries");
 
     await screen.findByText("API Error: 500 Internal server error");
     fireEvent.click(screen.getByRole("button", { name: "Retry task" }));
 
     await waitFor(() => {
       expect(mockApiObj.rerunIssue).toHaveBeenCalledWith("issue-1", "task-failed");
+      expect(invalidateTasks).toHaveBeenCalledWith({
+        queryKey: issueKeys.tasks("issue-1"),
+      });
     });
   });
 
