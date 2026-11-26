@@ -10,6 +10,7 @@ import (
 	"math/rand"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -30,6 +31,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/daemon/supervisor"
 	"github.com/multica-ai/multica/server/internal/selfexec"
 	"github.com/multica-ai/multica/server/pkg/agent"
+	"github.com/multica-ai/multica/server/pkg/protocol"
 	"github.com/multica-ai/multica/server/pkg/redact"
 	"github.com/multica-ai/multica/server/pkg/remotemcp"
 	"github.com/multica-ai/multica/server/pkg/skillbundle"
@@ -573,7 +575,13 @@ type Daemon struct {
 	// parent of this daemon's namespaced segment). The startup reconcile
 	// migrates own in-flight runs out of it; empty — as in directly
 	// constructed test daemons — disables migration entirely.
-	supervisedRunsBase string
+	supervisedRunsBase           string
+	environmentOperationsMu      sync.Mutex
+	environmentOperations        map[string]*environmentOperationLive
+	environmentOperationWorkers  sync.WaitGroup
+	environmentOperationsStopped bool
+	environmentPolicyMu          sync.Mutex
+	environmentPolicyScans       map[string]protocol.EnvironmentPolicyStatus
 	// restartMu guards restartBinary. Two goroutines can reach triggerRestart —
 	// the server-triggered handleUpdate and the autoUpdateLoop — and
 	// trySelfReload reads RestartBinary() from the latter to avoid racing the
@@ -2203,6 +2211,9 @@ func (d *Daemon) Run(ctx context.Context) error {
 	// Node ops channel (RUYI-645): periodic service inventory collector.
 	go d.opsInventoryLoop(ctx)
 	go d.gcLoop(ctx)
+	if d.cfg.EnvironmentRecycleEnabled {
+		go d.environmentRecycleLoop(ctx)
+	}
 	go d.autoUpdateLoop(ctx)
 	go d.tokenRenewalLoop(ctx)
 
@@ -2850,6 +2861,7 @@ func (d *Daemon) registerRuntimesForWorkspaceBatchLocked(ctx context.Context, wo
 		"daemon_id":         d.cfg.DaemonID,
 		"legacy_daemon_ids": d.cfg.LegacyDaemonIDs,
 		"device_name":       d.cfg.DeviceName,
+		"server_url":        registrationServerBaseURL(d.cfg.ServerBaseURL),
 		"cli_version":       d.cfg.CLIVersion,
 		"launched_by":       d.cfg.LaunchedBy,
 		"ops_caps":          d.opsCaps(),
@@ -2899,6 +2911,7 @@ func (d *Daemon) registerBuiltinRuntimesForWorkspaceLocked(ctx context.Context, 
 		"daemon_id":         d.cfg.DaemonID,
 		"legacy_daemon_ids": d.cfg.LegacyDaemonIDs,
 		"device_name":       d.cfg.DeviceName,
+		"server_url":        registrationServerBaseURL(d.cfg.ServerBaseURL),
 		"cli_version":       d.cfg.CLIVersion,
 		"launched_by":       d.cfg.LaunchedBy,
 		"ops_caps":          d.opsCaps(),
@@ -2920,6 +2933,19 @@ func (d *Daemon) registerBuiltinRuntimesForWorkspaceLocked(ctx context.Context, 
 	d.logger.Debug("builtin register response", "workspace_id", workspaceID, "runtimes", len(resp.Runtimes))
 	d.recordBuiltinVersionsSent(workspaceID, runtimes)
 	return resp, nil
+}
+
+func registrationServerBaseURL(raw string) string {
+	base, err := NormalizeServerBaseURL(raw)
+	if err != nil {
+		return ""
+	}
+	u, err := url.Parse(base)
+	if err != nil {
+		return ""
+	}
+	u.User = nil
+	return u.String()
 }
 
 // appendProfileRuntimes fetches the workspace's enabled custom runtime
@@ -5870,6 +5896,7 @@ func (d *Daemon) handleTask(ctx context.Context, task Task, slot int) {
 			}
 		}
 	}
+	d.recordEnvironmentCompletion(task, result, taskLog)
 }
 
 // worktreePreservedError marks a task error that must survive the cancel path:
@@ -6532,7 +6559,12 @@ func (d *Daemon) reportTerminalTask(parentCtx context.Context, report terminalTa
 // internal task with no IDs at all). The caller skips writing a meta file
 // in that case so the directory falls back to mtime-based orphan cleanup.
 func gcMetaForTask(task Task) (execenv.GCMeta, bool) {
-	meta := execenv.GCMeta{WorkspaceID: task.WorkspaceID, TaskID: task.ID}
+	meta := execenv.GCMeta{WorkspaceID: task.WorkspaceID, TaskID: task.ID, AgentID: task.AgentID,
+		RuntimeID: task.RuntimeID, ProjectID: task.ProjectID, ProjectName: task.ProjectTitle,
+		SquadID: task.SquadID, SquadName: task.SquadName}
+	if task.Agent != nil {
+		meta.AgentName = task.Agent.Name
+	}
 	switch {
 	case task.ChatSessionID != "":
 		meta.Kind = execenv.GCKindChat
@@ -6780,7 +6812,7 @@ func sessionHomeReachable(provider string, env *execenv.Environment, envReused b
 // function reads — the env-root provenance and the workdir task-context marker
 // — are written at Prepare time, so neither depends on completion ordering.
 func shouldReusePriorWorkdir(task Task, localAssignment *localDirectoryAssignment, workspacesRoot string) (string, bool) {
-	if task.PriorWorkDir == "" || localAssignment != nil {
+	if localAssignment != nil && !localAssignment.UsesWorktree() {
 		return "", false
 	}
 
@@ -6801,19 +6833,25 @@ func shouldReusePriorWorkdir(task Task, localAssignment *localDirectoryAssignmen
 		return "", false
 	}
 	parts := strings.Split(rel, string(filepath.Separator))
-	if len(parts) != 3 || parts[0] == "" || parts[1] == "" || parts[2] != "workdir" {
+	if len(parts) < 3 || parts[0] == "" || parts[1] == "" ||
+		(localAssignment == nil && (len(parts) != 3 || parts[2] != "workdir")) ||
+		(localAssignment != nil && parts[2] != "worktree") {
 		return "", false
 	}
-	if task.AgentID == "" || (task.IssueID == "" && task.ChatSessionID == "") {
+	if task.AgentID == "" || (task.IssueID == "" && task.ChatSessionID == "" && task.AutopilotID == "") {
 		return "", false
 	}
-	// Managed-env provenance is written only for non-local resumable envs, so
-	// its presence (plus the workspace/scope/agent match) proves this is a
-	// safe daemon-managed reuse target and not a residual local_directory path.
-	prov, err := execenv.ReadManagedEnvProvenance(filepath.Dir(workdir))
-	if err != nil || prov.ManagedBy != execenv.ManagedEnvProvenanceManagedBy ||
-		prov.WorkspaceID != task.WorkspaceID ||
-		prov.AgentID != task.AgentID {
+	physicalRoot := filepath.Join(root, parts[0], parts[1])
+	if localAssignment != nil {
+		previous, err := execenv.ReadRetainedLocalWorktree(physicalRoot)
+		params := localWorktreeParamsForTask(task, localAssignment, physicalRoot)
+		if err != nil || !execenv.LocalWorktreeReuseMatches(previous, params) {
+			return "", false
+		}
+		return workdir, true
+	}
+	prov, err := execenv.ReadManagedEnvProvenance(physicalRoot)
+	if err != nil || !managedReuseScopeMatches(task, prov) {
 		return "", false
 	}
 
@@ -6826,6 +6864,7 @@ func shouldReusePriorWorkdir(task Task, localAssignment *localDirectoryAssignmen
 		AgentID       string `json:"agent_id"`
 		IssueID       string `json:"issue_id"`
 		ChatSessionID string `json:"chat_session_id"`
+		AutopilotID   string `json:"autopilot_id"`
 	}
 	if json.Unmarshal(data, &marker) != nil {
 		return "", false
@@ -6839,10 +6878,16 @@ func shouldReusePriorWorkdir(task Task, localAssignment *localDirectoryAssignmen
 		}
 		return workdir, true
 	}
-	if prov.ChatSessionID != task.ChatSessionID || marker.ChatSessionID != task.ChatSessionID {
-		return "", false
+	if task.ChatSessionID != "" {
+		if prov.ChatSessionID != task.ChatSessionID || marker.ChatSessionID != task.ChatSessionID {
+			return "", false
+		}
+		return workdir, true
 	}
-	return workdir, true
+	if prov.AutopilotID == task.AutopilotID && marker.AutopilotID == task.AutopilotID && task.AutopilotID != "" {
+		return workdir, true
+	}
+	return "", false
 }
 
 // gateCodexResumeToRolloutPresence drops the prior Codex session when its
@@ -7213,6 +7258,12 @@ func (d *Daemon) startTaskPrepareLeaseExtender(ctx context.Context, task Task, t
 // and it carries the context's cause so the caller can end the task instead of
 // preparing an environment for work that no longer exists.
 func (d *Daemon) lockReusablePriorEnvRoot(ctx context.Context, task Task, localAssignment *localDirectoryAssignment, heldRoot string) (*execenv.EnvRootClaim, string, os.FileInfo, bool, error) {
+	// A reclaimed workline may still have a matching archive. Restore it before
+	// validating the prior workdir so a corrupt, otherwise eligible archive
+	// fails closed instead of silently starting a new code line.
+	if err := d.restoreArchivedPriorWorkdir(ctx, task, localAssignment); err != nil {
+		return nil, "", nil, false, err
+	}
 	// Pin the workspaces root BEFORE validating anything. Opening it after,
 	// from a name validation just approved, would re-resolve that name: rename
 	// the root aside, leave a symlink to a look-alike tree, and os.Root
@@ -7833,6 +7884,7 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		// identity check for the whole handoff chain (RUYI-848).
 		TaskID:              task.ID,
 		IssueID:             task.IssueID,
+		SquadID:             task.SquadID,
 		TriggerCommentID:    task.TriggerCommentID,
 		TriggerThreadID:     task.TriggerThreadID,
 		CommentReplyTargets: commentReplyThreads(task),
@@ -8261,31 +8313,63 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 			reuseBeforeUseTestHook()
 		}
 		var err error
-		env, err = d.reuseExecutionEnvironment(prepareCtx, execenv.ReuseParams{
-			WorkspacesRoot: d.cfg.WorkspacesRoot,
-			Profile:        d.cfg.Profile,
-			// The canonical path the lock was taken on. Handing Reuse the raw
-			// PriorWorkDir instead would re-resolve it, so the directory we
-			// locked and the directory we use could differ.
-			WorkDir:               priorWorkDir,
-			Provider:              provider,
-			CodexVersion:          codexVersion,
-			ResumeSessionID:       task.PriorSessionID,
-			OpenclawBin:           openclawBin,
-			McpConfig:             effectiveMcpConfig,
-			CursorMcpAuthSource:   cursorMcpAuthSource,
-			OpenclawGateway:       openclawGateway,
-			HermesSourceHome:      hermesSourceHome,
-			HermesSourceMustExist: hermesSourceMustExist,
-			HermesEnv:             hermesEnv,
-			HermesMemoryStore:     hermesMemoryStore,
-			HermesSessionStore:    hermesSessionStore,
-			ReasonixEnv:           reasonixEnv,
-			CodexCustomArgs:       codexSandboxArgs,
-			Task:                  taskCtx,
-		})
-		if err != nil {
-			return TaskResult{}, asEnvironmentSetupFailure(fmt.Errorf("reuse execution environment: %w", err))
+		var localReuse *execenv.LocalWorktree
+		var releaseLocalSnapshot func()
+		if localAssignment != nil && localAssignment.UsesWorktree() {
+			params := localWorktreeParamsForTask(task, localAssignment, managedCodeRoot(d.cfg.WorkspacesRoot, priorWorkDir))
+			releaseLocalSnapshot, err = d.acquireReusedWorktreeSnapshot(prepareCtx, task, localAssignment, taskLog)
+			if err != nil {
+				return TaskResult{}, err
+			}
+			previous, loadErr := execenv.ReadRetainedLocalWorktree(params.EnvRoot)
+			if loadErr != nil {
+				releaseLocalSnapshot()
+				return TaskResult{}, loadErr
+			}
+			if err := execenv.ReattachRestoredLocalWorktree(prepareCtx, previous, params, taskLog); err != nil {
+				releaseLocalSnapshot()
+				return TaskResult{}, asEnvironmentSetupFailure(err)
+			}
+			localReuse, err = execenv.ReuseLocalWorktree(previous, params, taskLog)
+			if err != nil {
+				releaseLocalSnapshot()
+				if !errors.Is(err, execenv.ErrLocalWorktreeNotReusable) {
+					return TaskResult{}, asEnvironmentSetupFailure(err)
+				}
+				reusable = false
+			}
+		}
+		if reusable {
+			env, err = d.reuseExecutionEnvironment(prepareCtx, execenv.ReuseParams{
+				WorkspacesRoot:      d.cfg.WorkspacesRoot,
+				RunRoot:             envClaim.RootDir(),
+				ReusedLocalWorktree: localReuse,
+				// The canonical path the lock was taken on. Handing Reuse the raw
+				// PriorWorkDir instead would re-resolve it, so the directory we
+				// locked and the directory we use could differ.
+				WorkDir:               priorWorkDir,
+				Provider:              provider,
+				CodexVersion:          codexVersion,
+				ResumeSessionID:       task.PriorSessionID,
+				OpenclawBin:           openclawBin,
+				McpConfig:             effectiveMcpConfig,
+				CursorMcpAuthSource:   cursorMcpAuthSource,
+				OpenclawGateway:       openclawGateway,
+				HermesSourceHome:      hermesSourceHome,
+				HermesSourceMustExist: hermesSourceMustExist,
+				HermesEnv:             hermesEnv,
+				HermesMemoryStore:     hermesMemoryStore,
+				HermesSessionStore:    hermesSessionStore,
+				ReasonixEnv:           reasonixEnv,
+				CodexCustomArgs:       codexSandboxArgs,
+				Task:                  taskCtx,
+			})
+			if releaseLocalSnapshot != nil {
+				releaseLocalSnapshot()
+			}
+			if err != nil {
+				return TaskResult{}, asEnvironmentSetupFailure(fmt.Errorf("reuse execution environment: %w", err))
+			}
 		}
 		// Reuse resolves priorWorkDir by name, so confirm what it actually
 		// opened is still the directory we hold the lock on. An fd cannot cross
@@ -8314,6 +8398,7 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 			WorkspaceID:     task.WorkspaceID,
 			WorkspaceSlug:   task.WorkspaceSlug,
 			TaskID:          task.ID,
+			RuntimeID:       task.RuntimeID,
 			IssueIdentifier: task.IssueIdentifier,
 			AgentName:       agentName,
 			// This run already holds the claim (envClaim above) and the reset
@@ -8341,7 +8426,8 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 			if err := validateWorktreeGitMetadata(localAssignment); err != nil {
 				return TaskResult{}, asEnvironmentSetupFailure(err)
 			}
-			prepParams.LocalWorktree = &execenv.LocalWorktreeParams{LocalPath: localAssignment.AbsPath}
+			worktreeParams := localWorktreeParamsForTask(task, localAssignment, envClaim.RootDir())
+			prepParams.LocalWorktree = &worktreeParams
 			// Take the per-path mutex for the snapshot alone, then hand it
 			// straight back — long enough to read a consistent tree, short
 			// enough that worktree tasks still overlap for the run itself.
@@ -8555,6 +8641,9 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 			"declared_scope", snapPlan.Declared,
 			"primary", snapPlan.Primary.AbsPath)
 	}
+	if env.CodeRootDir != "" {
+		defer func() { taskResult.CodeRoot = env.CodeRootDir }()
+	}
 	// Finalize the worktree on EVERY exit path, success or failure: commit
 	// whatever the agent left uncommitted, then unregister the worktree from
 	// the user's repo. Deferred against the named return so a task that fails
@@ -8582,9 +8671,9 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 				taskResult.BranchName = outcome.Branch
 			}
 			if finalizeErr == nil {
-				// The configured local_directory becomes authoritative only after
-				// Finalize confirms the disposable task worktree is actually gone.
-				if localAssignment != nil {
+				// A retained worktree is still the daemon-managed continuation
+				// target; it is not the user's configured directory.
+				if localAssignment != nil && !env.LocalWorktree.RetainCheckout {
 					taskResult.DurableWorkDir = localAssignment.AbsPath
 				}
 				return
@@ -9191,107 +9280,14 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	var retiredSessionID string
 	defer func() { taskResult.RetiredSessionID = retiredSessionID }()
 
-	retriedFreshSession := false
+	// The fresh-session retry loop includes the normal resume refusal and the
+	// bounded Claude pipe-crash recovery path.
 	var usageEntriesOverride []TaskUsageEntry
 	var usageEntriesOverridden bool
-	if shouldRetryWithFreshSession(result, task.PriorSessionID, tools, provider) {
-		retriedFreshSession = true
-		priorSessionID := task.PriorSessionID
-		firstResult := result
-		firstUsage := normalizePriorSessionUsage(provider, task, result.Usage)
-		firstTools := tools
-		if !result.ResumeRejectedTransient {
-			retiredSessionID = task.PriorSessionID
-		}
-		taskLog.Warn("session resume failed, retrying with fresh session", "error", result.Error)
-
-		// Rebuild cold-session context before the single retry. The prior
-		// provider transcript is gone (missing, account-mismatched, or —
-		// GH #5975 — carrying history the provider now refuses), so the
-		// fresh process must NOT be told it is resuming a conversation:
-		//   - taskCtx.PriorSessionResumed=false + re-injecting the runtime
-		//     brief rewrites the on-disk AGENTS.md so it no longer claims
-		//     "You're resuming the prior session" (which file-based backends
-		//     like Kiro load themselves).
-		//   - clearing task.PriorSessionID rebuilds the prompt on the cold
-		//     comment-reading path instead of the warm resumed one.
-		//   - PriorSessionResumeUnavailable=true makes BuildPrompt append the
-		//     continuity notice for this surface, so the agent knows not to
-		//     assume continuity it no longer has. This is now the ONLY injector
-		//     on the retry path: the backend's own copy is suppressed below,
-		//     because before MUL-5722 both fired and the turn carried the same
-		//     paragraph twice.
-		// task and taskCtx are local (runTask takes task by value), so these
-		// mutations only affect the retry.
-		execOpts.ResumeSessionID = ""
-		task.PriorSessionID = ""
-		task.PriorSessionResumeUnavailable = true
-		execOpts.ResumeContinuityNotice = ""
-		execOpts.PriorContextBriefSHA256 = provenanceTextHash(task.PriorContextBrief)
-		execOpts.PriorSessionResumeUnavailable = true
-		execOpts.SessionGate, continuationSource = sessionGateProvenance(task)
-		execOpts.SyntheticContinuation = strings.TrimSpace(task.PriorContextBrief) != ""
-		execOpts.SyntheticContinuationSource = continuationSource
-		taskCtx.PriorSessionResumed = false
-		var freshBrief string
-		var briefErr error
-		if snapPlan != nil {
-			freshBrief, briefErr = execenv.InjectRuntimeConfigSnapshot(env.WorkDir, snapshotPrimaryUpper, provider, taskCtx)
-		} else {
-			freshBrief, briefErr = execenv.InjectRuntimeConfig(env.WorkDir, provider, taskCtx)
-		}
-		if briefErr != nil {
-			taskLog.Warn("execenv: re-inject cold runtime config for fresh retry failed (non-fatal)", "error", briefErr)
-		} else {
-			runtimeBrief = freshBrief
-			if providerNeedsInlineSystemPrompt(provider) {
-				execOpts.SystemPrompt = runtimeBrief
-			}
-		}
-		freshPrompt := BuildPrompt(task, provider, promptOptions...)
-		// The previous supervised worker exited with its budget stop recorded
-		// in its manifest; planSupervisedRun steps to the next generation so
-		// this retry launches a fresh unit instead of reentering the old one.
-		execOpts.Supervision = d.planSupervisedRun(provider, task.ID, 2)
-		if execOpts.Supervision != nil {
-			execOpts.Supervision.RuntimeID = task.RuntimeID
-		}
-
-		retryResult, retryTools, retryErr := d.executeAndDrain(ctx, backend, freshPrompt, execOpts, taskLog, task.ID, env.CodexHome, provider, &msgSeq)
-		if retryErr != nil {
-			taskLog.Error("fresh session also failed to start; keeping the original poisoned result", "error", retryErr)
-			if errors.Is(retryErr, agent.ErrCancellationUnconfirmed) {
-				return TaskResult{}, retryErr
-			}
-		} else if retryResult.Status != "completed" && retryResult.SessionID == "" {
-			taskLog.Warn("fresh session retry also failed without establishing a new session; keeping the original poisoned result",
-				"retry_status", retryResult.Status,
-				"retry_error", retryResult.Error,
-			)
-		}
-		// The poisoned prior session id lives ONLY on firstResult (classified
-		// unrecoverable, so GetLastTaskSession excludes it). reconcile never
-		// grafts it onto the retry result: a retry that establishes a new
-		// session wins with its own id; a retry that fails without a new
-		// session keeps firstResult so the bad session stays excluded rather
-		// than being relabeled resumable by a benign-looking second error.
-		result, tools = reconcileFreshRetryResult(firstResult, firstUsage, firstTools, retryResult, retryTools, retryErr)
-		usageEntriesOverridden = true
-		usageEntriesOverride = append(
-			usageEntriesOverride,
-			taskUsageEntries(provider, priorSessionID, firstResult, firstUsage)...,
-		)
-		usageEntriesOverride = append(
-			usageEntriesOverride,
-			taskUsageEntries(provider, retryResult.SessionID, retryResult, retryResult.Usage)...,
-		)
-	}
-
-	// ACP providers report billing usage cumulatively for a resumed session. The
-	// resumed attempt is normalized before it is merged with a fresh retry, so a
-	// fresh session's independent usage is never reduced by the old baseline.
-	if !retriedFreshSession {
-		result.Usage = normalizePriorSessionUsage(provider, task, result.Usage)
+	result, tools, retryRetired := d.freshSessionRetryLoop(ctx, backend, promptOptions, execOpts, taskLog, &task, taskCtx, env, runtimeBrief, &msgSeq, result, tools, provider)
+	retiredSessionID = retryRetired
+	if task.PriorSessionUsageUnavailable {
+		result.Usage = nil
 	}
 
 	// Snapshot lifecycle (RUYI-669): the agent process is done, so the mounts
@@ -9601,6 +9597,153 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 			Usage:         usageEntries,
 			FailureReason: failureReason,
 		}, nil
+	}
+}
+
+const maxPipeCrashConsecutiveFailures = 3
+
+func (d *Daemon) freshSessionRetryLoop(
+	ctx context.Context,
+	backend agent.Backend,
+	promptOptions []PromptOption,
+	execOpts agent.ExecOptions,
+	taskLog *slog.Logger,
+	task *Task,
+	taskCtx execenv.TaskContextForEnv,
+	env *execenv.Environment,
+	runtimeBrief string,
+	msgSeq *atomic.Int32,
+	result agent.Result,
+	tools int32,
+	provider string,
+) (agent.Result, int32, string) {
+	firstResult := result
+	firstUsage := result.Usage
+	firstTools := tools
+	mergedUsage := firstUsage
+	retiredSessionID := ""
+	latestResult := result
+	latestTools := tools
+
+	// crashStreak counts CONSECUTIVE attempts whose failure names a pipe
+	// crash. Any non-crash outcome resets it: the budget exists to bound one
+	// transient failure mode, not to tax unrelated retries.
+	crashStreak := 0
+	noteCrash := func(r agent.Result) {
+		if r.Status == "failed" && taskfailure.ClaudePipelineCrash(r.Error) {
+			crashStreak++
+		} else {
+			crashStreak = 0
+		}
+	}
+	noteCrash(latestResult)
+
+	for attempt := 1; ; attempt++ {
+		gate := latestResult
+		crashRetry := d.cfg.PipeCrashSelfHealEnabled && crashStreak >= 1
+		if !d.cfg.PipeCrashSelfHealEnabled && crashStreak >= 1 {
+			gate.ResumeRejected = false
+		}
+		if !shouldRetryWithFreshSession(gate, task.PriorSessionID, latestTools, provider) {
+			if !(crashRetry &&
+				crashStreak < maxPipeCrashConsecutiveFailures &&
+				gate.Status == "failed" &&
+				gate.SessionID == "" &&
+				latestTools == 0) {
+				return result, tools, retiredSessionID
+			}
+		}
+		if task.PriorSessionID != "" && !result.ResumeRejectedTransient {
+			retiredSessionID = task.PriorSessionID
+		}
+		if crashRetry {
+			d.reportPipeCrashRetryNotice(task.ID, taskLog, msgSeq, crashStreak)
+		} else {
+			taskLog.Warn("session resume failed, retrying with fresh session", "error", result.Error)
+		}
+
+		// Rebuild cold-session context before the retry. The prior provider
+		// transcript is gone (missing, account-mismatched, — GH #5975 —
+		// carrying history the provider now refuses, or the CLI keeps dying
+		// on it), so the fresh process must NOT be told it is resuming a
+		// conversation:
+		//   - taskCtx.PriorSessionResumed=false + re-injecting the runtime
+		//     brief rewrites the on-disk AGENTS.md so it no longer claims
+		//     "You're resuming the prior session" (which file-based backends
+		//     like Kiro load themselves).
+		//   - clearing task.PriorSessionID rebuilds the prompt on the cold
+		//     comment-reading path instead of the warm resumed one.
+		//   - PriorSessionResumeUnavailable=true makes BuildPrompt append the
+		//     continuity notice for this surface, so the agent knows not to
+		//     assume continuity it no longer has. This is now the ONLY injector
+		//     on the retry path: the backend's own copy is suppressed below,
+		//     because before MUL-5722 both fired and the turn carried the same
+		//     paragraph twice.
+		// task is runTask's local copy and taskCtx a value parameter, so these
+		// mutations only affect the retries.
+		execOpts.ResumeSessionID = ""
+		task.PriorSessionID = ""
+		task.PriorSessionResumeUnavailable = true
+		execOpts.ResumeContinuityNotice = ""
+		taskCtx.PriorSessionResumed = false
+		if freshBrief, briefErr := execenv.InjectRuntimeConfig(env.WorkDir, provider, taskCtx); briefErr != nil {
+			taskLog.Warn("execenv: re-inject cold runtime config for fresh retry failed (non-fatal)", "error", briefErr)
+		} else {
+			runtimeBrief = freshBrief
+			if providerNeedsInlineSystemPrompt(provider) {
+				execOpts.SystemPrompt = runtimeBrief
+			}
+		}
+		freshPrompt := BuildPrompt(*task, provider, promptOptions...)
+		// The previous supervised worker exited with its budget stop recorded
+		// in its manifest; planSupervisedRun steps to the next generation so
+		// this retry launches a fresh unit instead of reentering the old one.
+		execOpts.Supervision = d.planSupervisedRun(provider, task.ID, attempt+1)
+
+		retryResult, retryTools, retryErr := d.executeAndDrain(ctx, backend, freshPrompt, execOpts, taskLog, task.ID, env.CodexHome, provider, msgSeq)
+		if retryErr != nil {
+			taskLog.Error("fresh session also failed to start; keeping the original result", "error", retryErr)
+		} else if retryResult.Status != "completed" && retryResult.SessionID == "" {
+			taskLog.Warn("fresh session retry also failed without establishing a new session; keeping the original result",
+				"retry_status", retryResult.Status,
+				"retry_error", retryResult.Error,
+			)
+		}
+		// The abandoned prior session id lives ONLY on firstResult (classified
+		// unrecoverable, so GetLastTaskSession excludes it). reconcile never
+		// grafts it onto the retry result: a retry that establishes a new
+		// session wins with its own id; a retry that fails without a new
+		// session keeps firstResult so the bad session stays excluded rather
+		// than being relabeled resumable by a benign-looking second error.
+		result, tools = reconcileFreshRetryResult(firstResult, mergedUsage, firstTools, retryResult, retryTools, retryErr)
+		mergedUsage = result.Usage
+		// The authoritative result intentionally remains the first failure when
+		// a retry fails without a session. Retry eligibility, however, must use
+		// the most recent attempt so a non-crash or tool-using retry cannot be
+		// mistaken for another safe pipe crash.
+		latestResult, latestTools = retryResult, retryTools
+		noteCrash(latestResult)
+	}
+}
+
+// reportPipeCrashRetryNotice posts the progress message that makes an
+// automatic pipe-crash retry visible in the task timeline (RUYI-659). A
+// recovery the user cannot see reads as flapping, so the message states what
+// was detected, which attempt this is, and where the automatic budget stops.
+// Best effort: a failed report costs a timeline row, never the retry itself.
+func (d *Daemon) reportPipeCrashRetryNotice(taskID string, taskLog *slog.Logger, msgSeq *atomic.Int32, crashStreak int) {
+	if d.client == nil {
+		return
+	}
+	content := fmt.Sprintf(
+		"检测到 Claude CLI 管道崩溃（会话未能建立），自动换新会话重试（第 %d 次，最多 %d 次；连续 %d 次失败将停止自动重试并转人工处理）",
+		crashStreak, maxPipeCrashConsecutiveFailures-1, maxPipeCrashConsecutiveFailures,
+	)
+	s := msgSeq.Add(1)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := d.client.ReportTaskMessages(ctx, taskID, []TaskMessageData{{Seq: int(s), Type: "text", Content: content}}); err != nil {
+		taskLog.Debug("failed to report pipe-crash retry notice", "error", err)
 	}
 }
 

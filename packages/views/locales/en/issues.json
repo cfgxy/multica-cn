@@ -547,14 +547,14 @@
     "trigger_blocked_runtime_offline": "This target's runtime is offline",
     "trigger_blocked_runtime_unusable": "This target's agent CLI can't run on its machine — reinstall it there",
     "trigger_blocked_agent_runtime_required": "This target has no runtime — bind one to run it",
-	"trigger_blocked_agent_only_cascade_blocked": "This agent-only handoff chain was paused to prevent a rapid cascade",
+    "trigger_blocked_agent_only_cascade_blocked": "This agent-only handoff chain was paused to prevent a rapid cascade",
     "trigger_blocked_generic": "This target won't be triggered",
     "trigger_blocked_short_invocation_not_allowed": "Not found or no permission",
     "trigger_blocked_short_target_unavailable": "Unavailable",
     "trigger_blocked_short_runtime_offline": "Runtime offline",
     "trigger_blocked_short_runtime_unusable": "CLI can't run",
     "trigger_blocked_short_agent_runtime_required": "Needs a runtime",
-	"trigger_blocked_short_agent_only_cascade_blocked": "Rapid handoff paused",
+    "trigger_blocked_short_agent_only_cascade_blocked": "Rapid handoff paused",
     "trigger_blocked_short_generic": "Won't start",
     "send_reply_failed": "Failed to send reply",
     "delete_failed": "Failed to delete comment",
@@ -609,7 +609,9 @@
       "menu_label": "Quick Replies",
       "menu_empty": "No quick replies configured by the workspace admins yet",
       "insert_aria": "Insert quick reply \"{{name}}\""
-    }
+    },
+    "trigger_blocked_budget_exceeded": "This target's runtime has reached its cost budget — try again after the period resets",
+    "trigger_blocked_short_budget_exceeded": "Budget reached"
   },
   "reply": {
     "placeholder": "Leave a reply..."
@@ -727,7 +729,13 @@
     "rerun_confirm_title": "Run this task again?",
     "rerun_confirm_body": "A new run will start on the same agent with its current configuration, in a fresh session. This run stays in the history unchanged.",
     "rerun_confirm_keep": "Keep as is",
-    "rerun_confirm_confirm": "Run again"
+    "rerun_confirm_confirm": "Run again",
+    "unpriced_rows_one": "{{count}} row unpriced",
+    "unpriced_rows_other": "{{count}} rows unpriced",
+    "day_today": "Today",
+    "day_yesterday": "Yesterday",
+    "day_runs_one": "{{count}} run",
+    "day_runs_other": "{{count}} runs"
   },
   "usage_detail": {
     "title": "Usage breakdown",
@@ -765,7 +773,9 @@
     "note_unpriced_one": "{{count}} run has no recorded usage and is not counted in the total.",
     "note_unpriced_other": "{{count}} runs have no recorded usage and are not counted in the total.",
     "note_unmapped": "No price on file for {{models}}; their tokens are counted but their cost is not.",
-    "note_estimate": "Cost is estimated from published model rates, except where the provider reported its own figure."
+    "note_estimate": "Cost is estimated from published model rates, except where the provider reported its own figure.",
+    "kpi_unpriced_one": "{{count}} row could not be priced",
+    "kpi_unpriced_other": "{{count}} rows could not be priced"
   },
   "terminate_dialog": {
     "title": "Stop this task?",
@@ -1250,7 +1260,9 @@
     "raw_error": "Raw error",
     "lineage": "Run chain",
     "lineage_rerun": "Manual rerun",
-    "lineage_system_retry": "System retry"
+    "lineage_system_retry": "System retry",
+    "unpriced_rows_one": "{{count}} row unpriced",
+    "unpriced_rows_other": "{{count}} rows unpriced"
   },
   "decisions": {
     "title": "Decision card",
@@ -1281,7 +1293,6 @@
     "restore_failed": "Failed to restore card",
     "browser_done": "All pending decisions answered",
     "batch_title": "Batch answer",
-    "batch_submit": "Submit all",
     "batch_submit": "Submit all",
     "auth_title": "Authorization request",
     "auth_state_approved": "Approved",

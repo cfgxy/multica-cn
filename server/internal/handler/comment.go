@@ -1718,6 +1718,7 @@ func (h *Handler) PreviewCommentTriggers(w http.ResponseWriter, r *http.Request)
 	}
 	opts.SourceTaskID = h.commentSourceTaskID(r)
 	triggers, targets := h.computeCommentAgentTriggers(r.Context(), issue, content, parentComment, actorType, actorID, opts)
+	triggers, targets = h.suppressSameIssueSelfTriggers(r.Context(), issue, triggers, targets, actorType, actorID)
 	// RUYI-391: the preview must not promise a run the submit path refuses.
 	// Same gate, same projection: resolvable targets surface as blocked with
 	// the issue-status reason instead of appearing in `agents`.
@@ -2099,6 +2100,15 @@ func (h *Handler) CreateComment(w http.ResponseWriter, r *http.Request) {
 	resp.InvalidMentions = findUnparsedAgentMentions(comment.Content)
 	resp.TriggerOutcomes = h.triggerTasksForComment(r.Context(), issue, comment, parentComment, authorType, authorID, originatorUserID, suppressAgentIDs)
 
+	// RUYI-660 M2: while the loop waits on a human, a member's plain reply is
+	// intent-routed — a stop directive retires the plan, anything else resumes
+	// it. Notes (/note) opt out, agent-authored comments never route, and
+	// decision-card answers already returned above (their consumption is the
+	// single wake).
+	if authorType == "member" && req.Type == "comment" && !isNoteComment(req.Content) {
+		h.TaskService.OnOuterLoopMemberComment(r.Context(), issue, comment)
+	}
+
 	writeJSON(w, http.StatusCreated, resp)
 }
 
@@ -2147,6 +2157,7 @@ func (h *Handler) triggerTasksForComment(ctx context.Context, issue db.Issue, co
 		SourceTaskID:            comment.SourceTaskID,
 		OriginatorUserID:        originatorUserID,
 	})
+	triggers, targets = h.suppressSameIssueSelfTriggers(ctx, issue, triggers, targets, actorType, actorID)
 	triggers = filterSuppressedCommentAgentTriggers(triggers, suppressAgentIDs)
 	// RUYI-391: the status gate sits AFTER resolution (so explicit mention
 	// targets are known and get an honest per-target outcome) but BEFORE any
@@ -2655,12 +2666,17 @@ func commentBlockedTargetOutcomes(targets []commentMentionTarget) []CommentTrigg
 // commentEnqueueFailureReason types an enqueue error that reached the response
 // (MUL-4525 §2). The admission gate (canInvokeAgent / archived / runtime) already
 // ran during resolution, so a failure here is either a fail-closed attribution
-// refusal (attribution_blocked, typed via errors.Is) or a rare race /
+// refusal (attribution_blocked, typed via errors.Is), a spent runtime cost
+// budget (budget_exceeded, typed via errors.As — RUYI-665), or a rare race /
 // infrastructure error that stays an unclassified internal error rather than
 // leaking the raw message.
 func commentEnqueueFailureReason(err error) DispatchReasonCode {
 	if errors.Is(err, service.ErrAttributionFailClosed) {
 		return ReasonAttributionBlocked
+	}
+	var budgetErr *service.RuntimeBudgetExceededError
+	if errors.As(err, &budgetErr) {
+		return ReasonBudgetExceeded
 	}
 	return ReasonInternalError
 }
@@ -3088,7 +3104,10 @@ func (h *Handler) enqueueSingleCommentTrigger(ctx context.Context, issue db.Issu
 // @squad mention (MUL-4525 §2). Targets come only from the explicit-mention path
 // — the implicit routing fallbacks (assignee, thread parent, conversation) were
 // never named by the user, so a no-route there is not a silent no-op.
-func (h *Handler) computeCommentAgentTriggers(ctx context.Context, issue db.Issue, content string, parentComment *db.Comment, actorType, actorID string, opts commentTriggerComputeOptions) ([]commentAgentTrigger, []commentMentionTarget) {
+func (h *Handler) computeCommentAgentTriggers(ctx context.Context, issue db.Issue, content string, parentComment *db.Comment, actorType, actorID string, opts commentTriggerComputeOptions) (triggers []commentAgentTrigger, targets []commentMentionTarget) {
+	defer func() {
+		triggers, targets = h.suppressSameIssueSelfTriggers(ctx, issue, triggers, targets, actorType, actorID)
+	}()
 	if isNoteComment(content) {
 		return nil, nil
 	}

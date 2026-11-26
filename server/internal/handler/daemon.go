@@ -398,6 +398,7 @@ type DaemonRegisterRequest struct {
 	DeviceName      string   `json:"device_name"`
 	CLIVersion      string   `json:"cli_version"` // multica CLI version
 	LaunchedBy      string   `json:"launched_by"` // "desktop" when spawned by the Electron app
+	ServerURL       string   `json:"server_url"`
 	Runtimes        []struct {
 		Name    string `json:"name"`
 		Type    string `json:"type"`
@@ -637,6 +638,7 @@ func (h *Handler) DaemonRegister(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	req.WorkspaceID = uuidToString(wsUUID)
+	serverURL := util.RuntimeAPIURL(req.ServerURL)
 
 	// Verify workspace access and resolve the owner used by every runtime write.
 	// A daemon token must carry the owner recovered by DaemonAuth; an unbound
@@ -722,6 +724,7 @@ func (h *Handler) DaemonRegister(w http.ResponseWriter, r *http.Request) {
 			"version":      runtime.Version,
 			"cli_version":  req.CLIVersion,
 			"launched_by":  req.LaunchedBy,
+			"server_url":   serverURL,
 			"capabilities": requestClientCapabilities(r),
 			// RUYI-645: daemon-probed ops capabilities; an empty slice is
 			// stored as absent so the ops gate fails closed for daemons
@@ -953,6 +956,7 @@ func (h *Handler) DaemonRegister(w http.ResponseWriter, r *http.Request) {
 					"version":                            "",
 					"cli_version":                        req.CLIVersion,
 					"launched_by":                        req.LaunchedBy,
+					"server_url":                         util.RuntimeAPIURL(serverURL),
 					"capabilities":                       requestClientCapabilities(r),
 					"runtime_profile_registration_error": true,
 					"runtime_profile_failure_reason":     reason,
@@ -3359,6 +3363,23 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 		}
 	}
 
+	// Automation runs reuse code within the same automation, but each run gets
+	// a fresh provider session. Workdir lookup is best-effort so an unavailable
+	// prior run never blocks an otherwise valid claim.
+	if task.AutopilotRunID.Valid && !task.IssueID.Valid && !task.ChatSessionID.Valid {
+		if run, err := h.Queries.GetAutopilotRun(r.Context(), task.AutopilotRunID); err == nil {
+			if workdir, workErr := h.automationPriorWorkdir(r.Context(), *task, runtime.WorkspaceID, run.AutopilotID); workErr == nil && workdir.Valid {
+				resp.PriorWorkDir = workdir.String
+			} else if workErr != nil {
+				slog.Warn("automation claim: prior workdir lookup failed",
+					"task_id", uuidToString(task.ID), "error", workErr)
+			}
+		} else if !errors.Is(err, pgx.ErrNoRows) {
+			slog.Warn("automation claim: load autopilot run failed",
+				"task_id", uuidToString(task.ID), "error", err)
+		}
+	}
+
 	// Chat task: populate workspace/session info from the chat_session table.
 	if task.ChatSessionID.Valid {
 		cs, chatErr := h.Queries.GetChatSession(r.Context(), task.ChatSessionID)
@@ -4869,6 +4890,10 @@ func (h *Handler) CompleteTask(w http.ResponseWriter, r *http.Request) {
 	// 2026-10-09 queue storm).
 	if freshlyFinalized {
 		h.reconcileCommentsOnCompletion(r.Context(), task)
+		// RUYI-660 M2: on a plan-carrying issue this is the loop's verdict
+		// point — continue with the next round, soft-stop at the cap, or
+		// retire on the end marker. Plan-less issues return immediately.
+		h.TaskService.OnOuterLoopTaskTerminal(r.Context(), *task, "completed", "")
 	}
 	// The terminal transaction and completion reconciliation are committed.
 	// Wake the owning runtime now so queued work that was blocked by this
@@ -6037,6 +6062,12 @@ func (h *Handler) failTask(w http.ResponseWriter, r *http.Request, taskID, works
 		return
 	}
 	h.TaskService.NotifyTaskFinished(*task)
+
+	// RUYI-660 M2: a failed round on a plan-carrying issue either parks the
+	// loop waiting on a human (agent-blocked / agent-error class) or is left
+	// for the stall sweep to pull back (pipeline class). Plan-less issues
+	// return immediately.
+	h.TaskService.OnOuterLoopTaskTerminal(r.Context(), *task, "failed", req.FailureReason)
 
 	// Best-effort revoke of the mat_ task token minted at claim. Same
 	// rationale as CompleteTask — eager deletion shrinks the post-
@@ -7358,21 +7389,5 @@ func (h *Handler) GetAutopilotRunGCCheck(w http.ResponseWriter, r *http.Request)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"status":       run.Status,
 		"completed_at": run.CompletedAt.Time,
-	})
-}
-
-// GetTaskGCCheck returns the agent_task_queue status for quick-create cleanup.
-// Quick-create tasks have no parent record (no issue_id at WriteGCMeta time,
-// no chat session, no autopilot run) so the daemon keys GC directly on the
-// task row itself.
-func (h *Handler) GetTaskGCCheck(w http.ResponseWriter, r *http.Request) {
-	taskID := chi.URLParam(r, "taskId")
-	task, ok := h.requireDaemonTaskAccess(w, r, taskID)
-	if !ok {
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{
-		"status":       task.Status,
-		"completed_at": task.CompletedAt.Time,
 	})
 }

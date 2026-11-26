@@ -46,6 +46,7 @@ import { availabilityConfig, workloadConfig } from "../../agents/presence";
 import { HealthBadge } from "./shared";
 import { ProviderLogo } from "./provider-logo";
 import { UsageSection } from "./usage-section";
+import { BudgetSection } from "./budget-section";
 import { RemoveRuntimeFromListDialog } from "./remove-runtime-from-list-dialog";
 import { runtimeRowLabel } from "./runtime-machines";
 import { BackpressureBadge } from "./runtime-backpressure-badge";
@@ -224,6 +225,7 @@ export function RuntimeDetail({
                 )}
               </section>
             )}
+            {canReadRuntime && <BudgetSection runtime={runtime} />}
             {canReadRuntime && <ModelCallBudgetCard runtime={runtime} canEdit={isAdmin} />}
             {canReadRuntime && <UsageSection runtime={runtime} />}
           </div>

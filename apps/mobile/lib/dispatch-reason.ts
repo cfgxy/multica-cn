@@ -22,11 +22,13 @@ export function dispatchReasonCode(err: unknown): string | undefined {
  * User-facing sentence for a refused send. `invocation_not_allowed` is the
  * revoked-permission case (MUL-4525): the session was created while the user
  * could run the agent and the server now refuses, so it must not read as a
- * transient failure the user should retry.
+ * transient failure the user should retry. `budget_exceeded` (RUYI-665) is
+ * the same shape: the runtime cost budget is spent and refusing sends until
+ * the period resets, so "try again" would be wrong advice.
  *
  * 走 `i18n.t` 而非 `useT`：这是普通函数不是组件，取不到 hook。绝对 key
  * （`chat:mobile.send_failure.*`）与 `lib/auth-error.ts` 同一模式。注意
- * 本文件是 `.ts`，不在 i18n 覆盖率扫描面（只扫 `.tsx`）内 —— 这三条曾是
+ * 本文件是 `.ts`，不在 i18n 覆盖率扫描面（只扫 `.tsx`）内 —— 这几条曾是
  * `chat.tsx` 弹窗「标题中文、正文英文」割裂的来源，防线看不见它们。
  */
 export function sendFailureMessage(err: unknown): string {
@@ -40,6 +42,11 @@ export function sendFailureMessage(err: unknown): string {
       return i18n.t(
         "chat:mobile.send_failure.runtime_required",
         "Bind a runtime to this agent before sending a message.",
+      );
+    case "budget_exceeded":
+      return i18n.t(
+        "chat:mobile.send_failure.budget_reached",
+        "The runtime's cost budget is spent for this period, so the message was not sent. It can be sent again once the budget period resets.",
       );
     default:
       return i18n.t(

@@ -115,6 +115,20 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	// daemon_id with no workspace_id: it survives workspace teardown and is
 	// overwritten by the daemon's next report cycle (RUYI-645).
 	"daemon_service_inventory":        workspaceDeleteKeep,
+	// Computer records belong to the deployment/human, not the workspace.
+	// Keep bindings so their owner can uninstall an OS service even after
+	// workspace deletion (RUYI-670, ported from trustbe-cn).
+	"computer":                      workspaceDeleteKeep,
+	"computer_audit":                workspaceDeleteKeep,
+	"computer_binding":              workspaceDeleteDetach,
+	"computer_credential":           workspaceDeleteKeep,
+	"computer_operation":            workspaceDeleteKeep,
+	"computer_runtime_asset":        workspaceDeleteKeep,
+	"computer_runtime_model_config": workspaceDeleteKeep,
+	"model_key_directory_entry":     workspaceDeleteKeep,
+	"model_key_source":              workspaceDeleteKeep,
+	"runtime_config_template":       workspaceDeleteKeep,
+	"user_model_key_grant":          workspaceDeleteKeep,
 	"daemon_token":                    workspaceDelete,
 	"dingtalk_group_presence":         workspaceDelete,
 	"dingtalk_bot_identity":           workspaceDelete,
@@ -268,6 +282,10 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	"credential_grant":      workspaceDelete,
 	"credential_capability": workspaceDelete,
 	"credential_audit":      workspaceDelete,
+	// Per-runtime cost budgets (RUYI-665) carry workspace_id and no FKs
+	// (house rule); DeleteWorkspaceRuntimesAndProjects deletes them by
+	// workspace_id in the same statement that deletes the runtimes.
+	"runtime_cost_budget": workspaceDelete,
 	// RUYI-288: runtime-local skill discovery summaries are workspace-scoped
 	// metadata; the whole set goes away with the workspace.
 	"runtime_skill_discovery": workspaceDelete,

@@ -190,12 +190,15 @@ var postConsolidationStems = []string{
 	"982_scheduling_pause_system_source_promql_recovery", // RUYI-859 forward recovery for historical policy databases
 	"983_daemon_token_owner",                             // daemon token ownership binding
 	"984_prompt_proposal_enactment_target",               // RUYI-858 (persistent enactment target on prompt_proposal: clause_library default vs static_prompt)
+	"985_task_usage_hourly_watermark_bootstrap",          // RUYI-872
+	"986_live_session_chat_link",
 	"993_runtime_removed_at",                             // RUYI-895 (hides a Runtime from user-managed lists)
 	"994_clause_injection_observation",                   // RUYI-891 (claim-time degraded carrier observations)
 	"994_clause_injection_observation_id_index",
 	"994_clause_injection_observation_task_scope_time_index",
 	"994_clause_injection_observation_workspace_time_index",
-	"995_knowledge_lifecycle", // RUYI-916
+	"944_workspace_squad_revision", // RUYI-666
+	"995_knowledge_lifecycle",      // RUYI-916
 	"995_knowledge_lifecycle_entry_version_index",
 	"995_knowledge_lifecycle_event_entry_index",
 	"996_knowledge_entry_version_provenance", // RUYI-916
@@ -207,6 +210,24 @@ var postConsolidationStems = []string{
 	"999_knowledge_entry_operation",           // RUYI-889
 	"999_knowledge_lifecycle_writeback_claim", // RUYI-916
 	"999_knowledge_lifecycle_writeback_claim_index",
+	"947_computer_management",
+	"948_computer_binding_account",
+	"949_computer_operation_id",
+	"950_computer_operation_active",
+	"951_computer_runtime_asset_key",
+	"952_computer_operation_history",
+	"953_model_key_directory_name",
+	"954_user_model_key_grant_position",
+	"955_model_key_source_identity",
+	"956_model_key_directory_entry_identity",
+	"957_user_model_key_grant_identity",
+	"958_runtime_config_template_identity",
+	"959_computer_runtime_model_config_identity",
+	"988_computer_id_index",
+	"989_computer_credential_user_id_index",
+	"990_computer_binding_id_index",
+	"991_computer_audit_id_index",
+	"992_computer_primary_keys",
 }
 
 // consolidationStems are the 17 canonical 9xx stems of the consolidated tree,

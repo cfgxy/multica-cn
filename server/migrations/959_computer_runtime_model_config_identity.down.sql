@@ -1,0 +1,1 @@
+DROP INDEX CONCURRENTLY IF EXISTS idx_computer_runtime_model_config_identity;

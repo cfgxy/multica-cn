@@ -4,7 +4,7 @@ import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useWorkspaceId } from "@multica/core/hooks";
 import { useWorkspacePaths } from "@multica/core/paths";
-import { runtimeDisplayLabel } from "@multica/core/runtimes";
+import { defaultAgentRuntime, runtimeDisplayLabel } from "@multica/core/runtimes";
 import { agentListOptions } from "@multica/core/workspace/queries";
 import { useBackOrReplace, useNavigation } from "../../navigation";
 import { useT } from "../../i18n";
@@ -59,7 +59,9 @@ export function ManualCreateAgentPage() {
     runtimes: form.runtimes,
     currentUserId: form.currentUserId,
     currentUserRole: form.currentUserRole,
-    fallbackRuntimeId: form.usableRuntimes[0]?.id ?? "",
+    fallbackRuntimeId:
+      defaultAgentRuntime(form.runtimes, form.currentUserId)?.id ??
+      form.usableRuntimes[0]?.id ?? "",
     nameSuffix: t(($) => $.create_dialog.duplicate_copy_suffix),
     onSeed: (duplicated, runtimeReset) => {
       // Only the forced fallback gets the notice; a later manual runtime switch

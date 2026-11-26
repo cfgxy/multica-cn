@@ -203,6 +203,10 @@ func runSquadUpdate(cmd *cobra.Command, args []string) error {
 		v, _ := cmd.Flags().GetString("avatar-url")
 		body["avatar_url"] = v
 	}
+	if cmd.Flags().Changed("expected-revision") {
+		v, _ := cmd.Flags().GetInt64("expected-revision")
+		body["expected_revision"] = v
+	}
 
 	if len(body) == 0 {
 		return fmt.Errorf("no fields to update; use flags like --name, --description, --instructions, --leader")
@@ -210,6 +214,9 @@ func runSquadUpdate(cmd *cobra.Command, args []string) error {
 
 	var result map[string]any
 	if err := client.PutJSON(ctx, "/api/squads/"+args[0], body, &result); err != nil {
+		if _, guarded := body["expected_revision"]; guarded {
+			err = guardedWriteOutcome(err, "re-read the current revision with 'multica squad get' and re-apply with the fresh value")
+		}
 		return fmt.Errorf("update squad: %w", err)
 	}
 
@@ -523,6 +530,7 @@ func init() {
 	squadUpdateCmd.Flags().String("instructions", "", "New instructions")
 	squadUpdateCmd.Flags().String("leader", "", "New leader agent (name or ID)")
 	squadUpdateCmd.Flags().String("avatar-url", "", "New avatar URL")
+	squadUpdateCmd.Flags().Int64("expected-revision", 0, "Optimistic lock (RUYI-666): apply only if the server-side revision still equals this value, from the last get/update response; a stale value fails with revision_conflict")
 	squadUpdateCmd.Flags().String("output", "json", "Output format: table or json")
 
 	// delete

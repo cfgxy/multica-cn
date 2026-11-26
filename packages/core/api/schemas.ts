@@ -7,6 +7,7 @@ export const BeginLarkPermissionGrantResponseSchema = z.object({
 }).loose();
 import type {
   AgentBuilderRuntimeSwitch,
+  RuntimeCostBudget,
   AgentBuilderSession,
   AgentBuilderSessionSummary,
   AgentEnvResponse,
@@ -174,10 +175,10 @@ export const AgentRuntimeSchema = z.object({
   daemon_id: z.string().nullable().default(null),
   name: z.string().default(""),
   custom_name: z.string().nullable().optional(),
-  runtime_mode: z.string().default("local"),
+  runtime_mode: z.enum(["local", "cloud"]).catch("local"),
   provider: z.string().default(""),
   launch_header: z.string().default(""),
-  status: z.string().default("offline"),
+  status: z.enum(["online", "offline"]).catch("offline"),
   device_info: z.string().default(""),
   metadata: z.record(z.string(), z.unknown()).default({}),
   owner_id: z.string().nullable().default(null),
@@ -192,6 +193,12 @@ export const AgentRuntimeSchema = z.object({
     realtime_voice: z.boolean(),
     tools: z.boolean(),
   }).optional(),
+  execution_source: z.object({
+    binding_id: z.string().min(1),
+    linux_user: z.string().min(1),
+    host: z.string().min(1),
+    preferred: z.boolean().catch(false),
+  }).nullable().catch(null),
   last_seen_at: z.string().nullable().default(null),
   created_at: z.string().default(""),
   updated_at: z.string().default(""),
@@ -2294,6 +2301,36 @@ const RuntimeUsageByHourSchema = z.object({
 }).loose();
 
 export const RuntimeUsageByHourListSchema = z.array(RuntimeUsageByHourSchema);
+
+// Runtime cost budget (RUYI-665). Every field is defensive: an older backend
+// has no /budget route at all, and a drifted one must degrade to an empty
+// budget rather than a parse failure.
+const RuntimeBudgetPeriodSchema = z.object({
+  limit_usd: z.number().default(0),
+  used_usd: z.number().default(0),
+  period_start: z.string().default(""),
+  reset_at: z.string().default(""),
+  reached: z.boolean().default(false),
+}).loose();
+
+const RuntimeBudgetScopeSchema = z.object({
+  user_id: z.string().optional(),
+  daily: RuntimeBudgetPeriodSchema.nullable().default(null),
+  weekly: RuntimeBudgetPeriodSchema.nullable().default(null),
+  monthly: RuntimeBudgetPeriodSchema.nullable().default(null),
+}).loose();
+
+export const RuntimeCostBudgetSchema = z.object({
+  runtime: RuntimeBudgetScopeSchema.nullable().default(null),
+  users: z.array(RuntimeBudgetScopeSchema).default([]),
+  can_manage: z.boolean().default(false),
+}).loose();
+
+export const EMPTY_RUNTIME_COST_BUDGET: RuntimeCostBudget = {
+  runtime: null,
+  users: [],
+  can_manage: false,
+};
 
 // ---------------------------------------------------------------------------
 // Agent task responses. The base object stays loose so daemon/runtime fields

@@ -16,6 +16,7 @@ export {
   canAssignAgentToIssue,
   canEditAgent,
   canEditAgentAccess,
+  canManageRuntimeBudget,
 } from "./rules";
 
 export {

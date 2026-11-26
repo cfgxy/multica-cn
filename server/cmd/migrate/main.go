@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"sort"
 	"strings"
 	"syscall"
 	"time"
@@ -358,6 +359,25 @@ var concurrentIndexCleanups = map[string][]string{
 	"998_knowledge_governance_run_workspace_created_index":      {"idx_knowledge_governance_run_workspace_created"},
 	"999_knowledge_lifecycle_writeback_claim_index":             {"idx_knowledge_lifecycle_event_writeback_claim"},
 	"1004_task_usage_session_attribution_index":                 {"uq_task_usage_task_session_provider_model"},
+	"1011_agent_task_queue_pending_slot_repair":                 {"idx_one_pending_task_per_issue_agent_v3"},
+	"1013_runtime_cost_budget_pkey_index":                       {"runtime_cost_budget_pkey_uidx"},
+	"1015_runtime_cost_budget_scope_index":                      {"idx_runtime_cost_budget_scope"},
+	"948_computer_binding_account":                              {"computer_binding_account"},
+	"949_computer_operation_id":                                 {"computer_operation_id"},
+	"950_computer_operation_active":                             {"computer_operation_active"},
+	"951_computer_runtime_asset_key":                            {"computer_runtime_asset_key"},
+	"952_computer_operation_history":                            {"computer_operation_history"},
+	"953_model_key_directory_name":                              {"idx_model_key_directory_entry_name"},
+	"954_user_model_key_grant_position":                         {"idx_user_model_key_grant_user_position"},
+	"955_model_key_source_identity":                             {"idx_model_key_source_identity"},
+	"956_model_key_directory_entry_identity":                    {"idx_model_key_directory_entry_identity"},
+	"957_user_model_key_grant_identity":                         {"idx_user_model_key_grant_identity"},
+	"958_runtime_config_template_identity":                      {"idx_runtime_config_template_identity"},
+	"959_computer_runtime_model_config_identity":                {"idx_computer_runtime_model_config_identity"},
+	"988_computer_id_index":                                     {"computer_pkey_uidx"},
+	"989_computer_credential_user_id_index":                     {"computer_credential_pkey_uidx"},
+	"990_computer_binding_id_index":                             {"computer_binding_pkey_uidx"},
+	"991_computer_audit_id_index":                               {"computer_audit_pkey_uidx"},
 }
 
 // concurrentDownIndexCleanups covers every migration whose down direction
@@ -396,13 +416,25 @@ var preMigrationHooks = func() map[string]preMigrationHook {
 	return hooks
 }()
 
-// renamedMigrationVersions maps pre-release RUYI-859 ledger identities to the
-// single allocated 982 number. The SQL files remain separate because Postgres
-// requires CREATE INDEX CONCURRENTLY to be the only statement in its command.
+// renamedMigrationVersions maps pre-release ledger identities to their
+// corrected on-disk migration identities. The SQL files remain separate when
+// Postgres requires CREATE INDEX CONCURRENTLY to be the only statement in its
+// command.
 var renamedMigrationVersions = map[string]string{
 	"982_agent_suppression_event_index":                  "983_agent_suppression_event_index",
 	"982_scheduling_pause_system_source":                 "985_scheduling_pause_system_source",
 	"982_scheduling_pause_system_source_promql_recovery": "985_scheduling_pause_system_source_promql_recovery",
+}
+
+// runtimeCostBudgetMigrationRenames must move as a complete four-step unit:
+// 963 creates the table; 964/965 create and attach its primary key; 966 builds
+// the scope index. A partial legacy ledger cannot prove which DDL landed, so
+// it deliberately fails closed rather than attempting a hybrid replay.
+var runtimeCostBudgetMigrationRenames = map[string]string{
+	"963_runtime_cost_budget":             "1012_runtime_cost_budget",
+	"964_runtime_cost_budget_pkey_index":  "1013_runtime_cost_budget_pkey_index",
+	"965_runtime_cost_budget_primary_key": "1014_runtime_cost_budget_primary_key",
+	"966_runtime_cost_budget_scope_index": "1015_runtime_cost_budget_scope_index",
 }
 
 var preRollbackHooks = func() map[string]preMigrationHook {
@@ -493,6 +525,52 @@ func hooksForDirection(direction string) map[string]preMigrationHook {
 	default:
 		return nil
 	}
+}
+
+// reconcileRuntimeCostBudgetMigrationRenames atomically moves a fully applied
+// legacy four-step budget migration sequence before the normal migrator sees
+// the non-idempotent replacement SQL.
+func reconcileRuntimeCostBudgetMigrationRenames(ctx context.Context, conn *pgxpool.Conn, tableIdent string) error {
+	legacyVersions := make([]string, 0, len(runtimeCostBudgetMigrationRenames))
+	targetVersions := make([]string, 0, len(runtimeCostBudgetMigrationRenames))
+	for legacy, target := range runtimeCostBudgetMigrationRenames {
+		legacyVersions = append(legacyVersions, legacy)
+		targetVersions = append(targetVersions, target)
+	}
+	sort.Strings(legacyVersions)
+	sort.Strings(targetVersions)
+
+	var legacyCount, targetCount int
+	query := fmt.Sprintf("SELECT count(*) FROM %s WHERE version = ANY($1)", tableIdent)
+	if err := conn.QueryRow(ctx, query, legacyVersions).Scan(&legacyCount); err != nil {
+		return fmt.Errorf("count legacy runtime-cost-budget migration ledger: %w", err)
+	}
+	if err := conn.QueryRow(ctx, query, targetVersions).Scan(&targetCount); err != nil {
+		return fmt.Errorf("count target runtime-cost-budget migration ledger: %w", err)
+	}
+	if legacyCount == 0 && (targetCount == 0 || targetCount == len(targetVersions)) {
+		return nil
+	}
+	if legacyCount != len(legacyVersions) || targetCount != 0 {
+		return fmt.Errorf("runtime-cost-budget migration ledger is partial or mixed: legacy=%d/%d target=%d/%d", legacyCount, len(legacyVersions), targetCount, len(targetVersions))
+	}
+
+	args := make([]any, 0, len(legacyVersions)*2)
+	values := make([]string, 0, len(legacyVersions))
+	for i, legacy := range legacyVersions {
+		target := runtimeCostBudgetMigrationRenames[legacy]
+		values = append(values, fmt.Sprintf("($%d::text, $%d::text)", i*2+1, i*2+2))
+		args = append(args, legacy, target)
+	}
+	query = fmt.Sprintf(`
+		UPDATE %s AS ledger
+		SET version = replacement.target
+		FROM (VALUES %s) AS replacement(legacy, target)
+		WHERE ledger.version = replacement.legacy`, tableIdent, strings.Join(values, ", "))
+	if _, err := conn.Exec(ctx, query, args...); err != nil {
+		return fmt.Errorf("rename legacy runtime-cost-budget migration ledger: %w", err)
+	}
+	return nil
 }
 
 // reconcileRenamedMigrationVersion keeps a pre-release ledger compatible with
@@ -1145,6 +1223,12 @@ func runMigrations(ctx context.Context, pool *pgxpool.Pool, opts runOptions) err
 		)
 	`, tableIdent)); err != nil {
 		return fmt.Errorf("create migrations table: %w", err)
+	}
+
+	if opts.Direction == "up" {
+		if err := reconcileRuntimeCostBudgetMigrationRenames(ctx, conn, tableIdent); err != nil {
+			return err
+		}
 	}
 
 	existsSQL := fmt.Sprintf("SELECT EXISTS(SELECT 1 FROM %s WHERE version = $1)", tableIdent)

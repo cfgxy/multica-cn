@@ -848,6 +848,9 @@ func (h *Handler) writeSourceContextError(w http.ResponseWriter, err error, limi
 	if writeIssueLimitReached(w, err) {
 		return
 	}
+	if writeRuntimeBudgetExceeded(w, err) {
+		return
+	}
 	status := http.StatusInternalServerError
 	code := "source_context_capture_failed"
 	message := "failed to capture source context"

@@ -535,14 +535,14 @@
     "trigger_blocked_runtime_offline": "이 대상의 런타임이 오프라인입니다",
     "trigger_blocked_runtime_unusable": "이 대상의 CLI를 해당 기기에서 실행할 수 없습니다 — 그 기기에서 다시 설치하세요",
     "trigger_blocked_agent_runtime_required": "이 대상에 런타임이 없습니다 — 실행하려면 런타임을 연결하세요",
-	"trigger_blocked_agent_only_cascade_blocked": "빠른 연쇄를 막기 위해 이 에이전트 전용 인계 체인이 일시 중지되었습니다",
+    "trigger_blocked_agent_only_cascade_blocked": "빠른 연쇄를 막기 위해 이 에이전트 전용 인계 체인이 일시 중지되었습니다",
     "trigger_blocked_generic": "이 대상은 트리거되지 않습니다",
     "trigger_blocked_short_invocation_not_allowed": "찾을 수 없음 또는 권한 없음",
     "trigger_blocked_short_target_unavailable": "사용 불가",
     "trigger_blocked_short_runtime_offline": "런타임 오프라인",
     "trigger_blocked_short_runtime_unusable": "CLI 실행 불가",
     "trigger_blocked_short_agent_runtime_required": "런타임 필요",
-	"trigger_blocked_short_agent_only_cascade_blocked": "빠른 인계 일시 중지",
+    "trigger_blocked_short_agent_only_cascade_blocked": "빠른 인계 일시 중지",
     "trigger_blocked_short_generic": "트리거 안 됨",
     "send_reply_failed": "답글을 보내지 못했습니다",
     "delete_failed": "댓글을 삭제하지 못했습니다",
@@ -592,7 +592,9 @@
       "menu_label": "빠른 답장",
       "menu_empty": "워크스페이스 관리자가 아직 빠른 답장을 설정하지 않았습니다",
       "insert_aria": "빠른 답장 \"{{name}}\" 삽입"
-    }
+    },
+    "trigger_blocked_budget_exceeded": "이 대상의 런타임이 비용 예산 한도에 도달했습니다 — 기간이 재설정된 후 다시 시도하세요",
+    "trigger_blocked_short_budget_exceeded": "한도 도달"
   },
   "reply": {
     "placeholder": "답글 남기기..."
@@ -702,7 +704,11 @@
     "rerun_confirm_title": "이 작업을 다시 실행할까요?",
     "rerun_confirm_body": "동일한 에이전트에서 현재 설정과 새 세션으로 다시 실행합니다. 이 실행은 기록에 그대로 남습니다.",
     "rerun_confirm_keep": "그대로 두기",
-    "rerun_confirm_confirm": "다시 실행"
+    "rerun_confirm_confirm": "다시 실행",
+    "unpriced_rows_other": "미산출 {{count}}건",
+    "day_today": "오늘",
+    "day_yesterday": "어제",
+    "day_runs_other": "실행 {{count}}회"
   },
   "usage_detail": {
     "title": "사용량 내역",
@@ -737,7 +743,8 @@
     "total": "합계",
     "note_unpriced_other": "실행 {{count}}회는 사용량 기록이 없어 합계에 포함되지 않습니다.",
     "note_unmapped": "{{models}}의 가격 정보가 없어 토큰은 집계되지만 비용은 포함되지 않습니다.",
-    "note_estimate": "비용은 공개된 모델 요금 기준 추정치이며, 제공자가 자체 비용을 보고한 경우는 그 값을 사용합니다."
+    "note_estimate": "비용은 공개된 모델 요금 기준 추정치이며, 제공자가 자체 비용을 보고한 경우는 그 값을 사용합니다.",
+    "kpi_unpriced_other": "미산출 {{count}}건"
   },
   "terminate_dialog": {
     "title": "이 작업을 중지할까요?",
@@ -1209,7 +1216,8 @@
     "raw_error": "원본 오류",
     "lineage": "실행 체인",
     "lineage_rerun": "수동 재실행",
-    "lineage_system_retry": "시스템 재시도"
+    "lineage_system_retry": "시스템 재시도",
+    "unpriced_rows_other": "미산출 {{count}}건"
   },
   "decisions": {
     "title": "의사결정 카드",
@@ -1240,7 +1248,6 @@
     "restore_failed": "카드 복원 실패",
     "browser_done": "대기 중인 결정을 모두 완료했습니다",
     "batch_title": "일괄 답변",
-    "batch_submit": "모두 제출",
     "batch_submit": "모두 제출",
     "auth_title": "승인 요청",
     "auth_state_approved": "승인됨",

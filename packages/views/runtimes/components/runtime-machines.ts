@@ -1,4 +1,8 @@
-import { deriveRuntimeHealth, type RuntimeHealth } from "@multica/core/runtimes";
+import {
+  runtimeSourceLabel,
+  deriveRuntimeHealth,
+  type RuntimeHealth,
+} from "@multica/core/runtimes";
 import type { AgentRuntime } from "@multica/core/types";
 import { formatDeviceInfo } from "../utils";
 
@@ -93,9 +97,16 @@ export function runtimeRowLabel(
 ): string {
   const custom = runtime.custom_name?.trim();
   if (!custom) return splitRuntimeName(runtime.name).base;
+  // A Linux-account machine title already carries the source label
+  // ("host · user@host"); an alias equal to that full title is a
+  // machine-level rename, not a per-runtime one.
+  if (`${custom} · ${runtimeSourceLabel(runtime)}` === machineTitle) {
+    return splitRuntimeName(runtime.name).base;
+  }
   if (custom !== machineTitle) return custom;
-  // Callers without a known machine size keep the legacy collapse.
-  return machineRuntimeCount !== undefined && machineRuntimeCount <= 1
+  // On a machine with a single runtime the legacy "custom equals the base"
+  // collapse would hide the user's name entirely — keep the alias visible.
+  return machineRuntimeCount === 1
     ? custom
     : splitRuntimeName(runtime.name).base;
 }
@@ -128,6 +139,15 @@ export function buildRuntimeMachines(
     machines.push(placeholderLocalMachine(options));
   }
 
+  // Older unmanaged daemons do not report an OS account. Keep identically
+  // named sources distinguishable without inventing a username.
+  const titleCounts = new Map<string, number>();
+  for (const machine of machines)
+    titleCounts.set(machine.title, (titleCounts.get(machine.title) ?? 0) + 1);
+  for (const machine of machines) {
+    if ((titleCounts.get(machine.title) ?? 0) > 1 && machine.daemonId)
+      machine.title += ` · ${shortDaemonId(machine.daemonId)}`;
+  }
   return machines.sort(compareRuntimeMachines);
 }
 
@@ -205,7 +225,9 @@ function finalizeRuntimeMachine(
     a.provider.localeCompare(b.provider),
   );
   const first = runtimes[0];
-  const providerNames = Array.from(new Set(runtimes.map((r) => r.provider))).sort();
+  const providerNames = Array.from(
+    new Set(runtimes.map((r) => r.provider)),
+  ).sort();
   // Device-name consolidation is only safe for the current user's own
   // local runtimes — the list spans the whole workspace, so a host-name
   // match alone could claim another member's identically-named machine.
@@ -217,14 +239,17 @@ function finalizeRuntimeMachine(
   const isCurrent =
     (!!options.localDaemonId && draft.daemonId === options.localDaemonId) ||
     (draft.mode === "local" &&
+      !runtimes.some((runtime) => runtime.execution_source) &&
       !!options.localMachineName &&
       ownsLocalRuntime &&
       (matchesLocalName(draft.daemonId) ||
         runtimes.some((r) => matchesLocalName(runtimeDeviceName(r)))));
-  const title = machineTitle(runtimes, {
+  const baseTitle = machineTitle(runtimes, {
     isCurrent,
     localMachineName: options.localMachineName,
   });
+  const source = first ? runtimeSourceLabel(first) : null;
+  const title = source ? `${baseTitle} · ${source}` : baseTitle;
   const deviceInfo = first ? formatDeviceInfo(first.device_info ?? null) : null;
   const subtitle = machineSubtitle({
     title,
