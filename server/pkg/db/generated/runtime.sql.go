@@ -334,7 +334,19 @@ func (q *Queries) DeleteRuntimeCredentialsByInstance(ctx context.Context, runtim
 }
 
 const deleteSystemAgentsByRuntime = `-- name: DeleteSystemAgentsByRuntime :exec
-DELETE FROM agent WHERE runtime_id = $1 AND kind = 'system'
+WITH targets AS (
+    SELECT id FROM agent WHERE runtime_id = $1 AND kind = 'system'
+),
+deleted_scope_items AS (
+    DELETE FROM prompt_quiz_agent_scope_item WHERE agent_id IN (SELECT id FROM targets)
+),
+deleted_scope_audit AS (
+    DELETE FROM prompt_quiz_agent_scope_audit WHERE agent_id IN (SELECT id FROM targets)
+),
+deleted_scopes AS (
+    DELETE FROM prompt_quiz_agent_scope WHERE agent_id IN (SELECT id FROM targets)
+)
+DELETE FROM agent WHERE id IN (SELECT id FROM targets)
 `
 
 // System agents are invisible execution infrastructure (for example the Agent

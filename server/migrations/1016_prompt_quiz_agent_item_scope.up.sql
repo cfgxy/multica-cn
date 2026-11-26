@@ -18,6 +18,8 @@ CREATE TABLE prompt_quiz_agent_scope_audit (
     workspace_id UUID NOT NULL,
     agent_id UUID NOT NULL,
     actor_id UUID,
+    before_explicit BOOLEAN NOT NULL,
+    after_explicit BOOLEAN NOT NULL,
     before_item_ids JSONB NOT NULL DEFAULT '[]'::jsonb,
     after_item_ids JSONB NOT NULL DEFAULT '[]'::jsonb,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()

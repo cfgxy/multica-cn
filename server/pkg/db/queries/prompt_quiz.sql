@@ -68,6 +68,10 @@ WHERE id = sqlc.arg('id')::uuid
 RETURNING *;
 
 -- name: DeletePromptQuizItem :execrows
+WITH deleted_scope_items AS (
+    DELETE FROM prompt_quiz_agent_scope_item
+    WHERE item_id = sqlc.arg('id')::uuid
+)
 DELETE FROM prompt_quiz_item
 WHERE id = sqlc.arg('id')::uuid
   AND workspace_id = sqlc.arg('workspace_id')::uuid;
