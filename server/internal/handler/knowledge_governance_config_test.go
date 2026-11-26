@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"testing"
+	"time"
 
 	"github.com/multica-ai/multica/server/internal/middleware"
 	"github.com/multica-ai/multica/server/internal/testutil"
@@ -25,6 +26,12 @@ func TestKnowledgeGovernanceConfigIsolatedAndAudited(t *testing.T) {
 	defer testPool.Exec(t.Context(), `DELETE FROM knowledge_governance_config_audit WHERE workspace_id = $1`, wsID)
 	defer testPool.Exec(t.Context(), `DELETE FROM knowledge_governance_config WHERE workspace_id = $1`, wsID)
 
+	// Pin the service clock: the persisted initial anchor and the immediate
+	// response must agree, rather than relying on wall-clock timing.
+	originalNow := testHandler.Now
+	testHandler.Now = func() time.Time { return time.Date(2026, time.November, 26, 10, 15, 0, 0, time.UTC) }
+	t.Cleanup(func() { testHandler.Now = originalNow })
+
 	retroExecutor := retroAgent(t, wsID, "retro executor")
 	governanceAgent := retroAgent(t, wsID, "governance executor")
 	dbfx.InsertNoID(t, "retrospective_config", testutil.Cols{
@@ -42,6 +49,7 @@ func TestKnowledgeGovernanceConfigIsolatedAndAudited(t *testing.T) {
 		AgentID  string `json:"agent_id"`
 		Cadence  string `json:"cadence"`
 		Timezone string `json:"timezone"`
+		Next     string `json:"next_scheduled_at"`
 		Audit    []struct {
 			Version int `json:"version"`
 		} `json:"audit"`
@@ -49,7 +57,7 @@ func TestKnowledgeGovernanceConfigIsolatedAndAudited(t *testing.T) {
 	if err := json.Unmarshal([]byte(body), &got); err != nil {
 		t.Fatalf("decode config: %v", err)
 	}
-	if !got.Enabled || got.AgentID != governanceAgent || got.Cadence != "weekly" || got.Timezone != "Asia/Shanghai" || len(got.Audit) != 1 {
+	if !got.Enabled || got.AgentID != governanceAgent || got.Cadence != "weekly" || got.Timezone != "Asia/Shanghai" || got.Next != "2026-11-29T16:00:00.000Z" || len(got.Audit) != 1 {
 		t.Fatalf("governance config or audit mismatch: %+v", got)
 	}
 	var preservedAgent string
@@ -57,6 +65,17 @@ func TestKnowledgeGovernanceConfigIsolatedAndAudited(t *testing.T) {
 	dbfx.QueryRow(t, `SELECT agent_id::text, enabled FROM retrospective_config WHERE workspace_id = $1`, wsID).Scan(&preservedAgent, &preservedEnabled)
 	if preservedAgent != retroExecutor || !preservedEnabled {
 		t.Fatalf("retrospective config was changed: agent=%q enabled=%t", preservedAgent, preservedEnabled)
+	}
+
+	// Once the initial window is in the past, the API reports the following
+	// future calendar boundary rather than re-emitting a stale anchor.
+	testHandler.Now = func() time.Time { return time.Date(2026, time.November, 30, 17, 0, 0, 0, time.UTC) }
+	code, body = legislationCall(t, governanceConfigRoute(testHandler.GetKnowledgeGovernanceConfig).ServeHTTP, legislationReq(ownerID, wsID, http.MethodGet, "/api/knowledge/governance/config", nil))
+	if code != http.StatusOK {
+		t.Fatalf("read governance config: expected 200, got %d: %s", code, body)
+	}
+	if err := json.Unmarshal([]byte(body), &got); err != nil || got.Next != "2026-12-06T16:00:00.000Z" {
+		t.Fatalf("post-anchor next schedule = %q, decode err=%v; want 2026-12-06T16:00:00.000Z", got.Next, err)
 	}
 
 	code, body = governanceConfigCall(t, governanceConfigRoute(testHandler.UpdateKnowledgeGovernanceConfig).ServeHTTP, memberID, wsID, map[string]any{"enabled": false})
