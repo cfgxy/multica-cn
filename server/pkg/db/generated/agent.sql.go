@@ -3103,8 +3103,17 @@ func (q *Queries) CountDelegatedFailureRecoveryTasks(ctx context.Context, failed
 }
 
 const countRunningTasks = `-- name: CountRunningTasks :one
-SELECT count(*) FROM agent_task_queue
-WHERE agent_id = $1 AND status IN ('dispatched', 'running', 'waiting_local_directory')
+SELECT count(*) FROM agent_task_queue atq
+WHERE atq.agent_id = $1 AND atq.status IN ('dispatched', 'running', 'waiting_local_directory')
+  AND NOT (
+      atq.originator_source = 'quiz'
+      AND COALESCE((
+          SELECT c.enabled FROM prompt_quiz_schedule_control c
+          JOIN agent a ON a.workspace_id = c.workspace_id
+          WHERE a.id = atq.agent_id AND (c.agent_id IS NULL OR c.agent_id = a.id)
+          ORDER BY c.agent_id NULLS LAST LIMIT 1
+      ), TRUE) = FALSE
+  )
 `
 
 // waiting_local_directory remains capacity-bearing until resume admission has
