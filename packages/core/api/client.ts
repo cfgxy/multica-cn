@@ -214,6 +214,7 @@ import type {
   KnowledgeLifecycleEvent,
   UpdateKnowledgeLifecycleRequest,
   RestoreKnowledgeEntryRequest,
+  KnowledgeGovernanceConfig,
   KnowledgeGovernanceRun,
   KnowledgeGovernanceRunDetail,
   KnowledgeGovernanceRunStart,
@@ -710,6 +711,8 @@ import {
   KnowledgeDirManagedSchema,
   KnowledgeLifecycleUpdateSchema,
   KnowledgeEntryRestoreSchema,
+  KnowledgeGovernanceConfigSchema,
+  KnowledgeGovernanceOpinionListResponseSchema,
   KnowledgeGovernanceRunListResponseSchema,
   KnowledgeGovernanceRunDetailSchema,
   KnowledgeGovernanceRunStartSchema,
@@ -6211,6 +6214,36 @@ export class ApiClient {
     });
     return parseWithFallback(raw, KnowledgeEntryRestoreSchema, { status: "", version: 0 }, {
       endpoint: "POST /api/knowledge/entries/{id}/restore",
+    });
+  }
+
+  async getKnowledgeGovernanceConfig(): Promise<KnowledgeGovernanceConfig> {
+    const raw = await this.fetch<unknown>("/api/knowledge/governance/config");
+    return parseWithFallback(raw, KnowledgeGovernanceConfigSchema, {
+      enabled: false, agent_id: "", agent_name: "", cadence: "daily", timezone: "UTC", version: 0, source: "default", executable: false, audit: [],
+    }, { endpoint: "GET /api/knowledge/governance/config" });
+  }
+
+  async updateKnowledgeGovernanceConfig(patch: Partial<KnowledgeGovernanceConfig>): Promise<KnowledgeGovernanceConfig> {
+    const raw = await this.fetch<unknown>("/api/knowledge/governance/config", {
+      method: "PUT",
+      body: JSON.stringify(patch),
+    });
+    return parseWithFallback(raw, KnowledgeGovernanceConfigSchema, {
+      enabled: false, agent_id: "", agent_name: "", cadence: "daily", timezone: "UTC", version: 0, source: "default", executable: false, audit: [],
+    }, { endpoint: "PUT /api/knowledge/governance/config" });
+  }
+
+  async listKnowledgeGovernanceOpinions(): Promise<import("../types").KnowledgeGovernanceOpinion[]> {
+    const raw = await this.fetch<unknown>("/api/knowledge/governance/opinions");
+    return parseWithFallback(raw, KnowledgeGovernanceOpinionListResponseSchema, { opinions: [] }, {
+      endpoint: "GET /api/knowledge/governance/opinions",
+    }).opinions;
+  }
+
+  async decideKnowledgeGovernanceOpinion(id: string, decision: "approve" | "reject"): Promise<{ status: string }> {
+    return this.fetch(`/api/knowledge/governance/opinions/${encodeURIComponent(id)}/${decision}`, {
+      method: "POST", body: JSON.stringify({}),
     });
   }
 

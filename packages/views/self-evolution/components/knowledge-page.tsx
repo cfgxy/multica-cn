@@ -38,12 +38,14 @@ import {
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@multica/ui/components/ui/alert-dialog";
 import { clientErrorMessage } from "@multica/core/api";
 import { useCurrentMember } from "@multica/core/permissions";
-import type { KnowledgeDir, KnowledgeEntry, KnowledgeEntryOperation, KnowledgeEntryVersion, KnowledgeGovernanceRun, KnowledgeLifecycleEvent, RestoreKnowledgeEntryRequest, UpdateKnowledgeLifecycleRequest } from "@multica/core/types";
+import type { KnowledgeDir, KnowledgeEntry, KnowledgeEntryOperation, KnowledgeEntryVersion, KnowledgeGovernanceOpinion, KnowledgeGovernanceRun, KnowledgeLifecycleEvent, RestoreKnowledgeEntryRequest, UpdateKnowledgeLifecycleRequest } from "@multica/core/types";
 import {
   knowledgeDirsOptions,
   knowledgeEntryLifecycleOptions,
   knowledgeEntryVersionsOptions,
   knowledgeEntriesOptions,
+  knowledgeGovernanceOpinionsOptions,
+  useDecideKnowledgeGovernanceOpinion,
   knowledgeGovernanceRunsOptions,
   useAdoptKnowledgeEntry,
   useDeleteKnowledgeEntry,
@@ -66,6 +68,7 @@ import { useWorkspaceId } from "@multica/core/hooks";
 import { ContentEditor } from "../../editor";
 import { PromptDiffView } from "../../market/prompt-diff-view";
 import { KnowledgeGovernanceRunDetailSheet } from "./knowledge-governance-run-detail";
+import { KnowledgeGovernanceConfig } from "./knowledge-governance-config";
 import { PickerEmpty, PickerItem, PropertyPicker } from "../../issues/components/pickers/property-picker";
 
 type KnowledgeSegment = "entries" | "archived" | "dirs" | "external" | "governance";
@@ -115,6 +118,8 @@ export function KnowledgePageBody({ wsId }: { wsId: string }) {
   const versions = useQuery(knowledgeEntryVersionsOptions(wsId, openEntry?.id ?? ""));
   const lifecycle = useQuery(knowledgeEntryLifecycleOptions(wsId, openEntry?.id ?? ""));
   const governanceRuns = useQuery(knowledgeGovernanceRunsOptions(wsId));
+  const governanceOpinions = useQuery(knowledgeGovernanceOpinionsOptions(wsId));
+  const decideOpinion = useDecideKnowledgeGovernanceOpinion(wsId);
   const register = useRegisterKnowledgeDir(wsId);
   const scan = useScanKnowledgeDir(wsId);
   const unregister = useUnregisterKnowledgeDir(wsId);
@@ -209,6 +214,7 @@ export function KnowledgePageBody({ wsId }: { wsId: string }) {
 
   return (
     <div className="flex min-w-0 flex-col gap-4 overflow-y-auto">
+      <KnowledgeGovernanceConfig wsId={wsId} />
       <EntitySegToolbar
         segments={segmentRows}
         value={segment}
@@ -326,6 +332,10 @@ export function KnowledgePageBody({ wsId }: { wsId: string }) {
       {segment === "governance" ? (
         <GovernanceRunsSegment
           runs={governanceRuns}
+          opinions={governanceOpinions.data ?? []}
+          canManage={canManage}
+          deciding={decideOpinion.isPending}
+          onDecision={(id, decision) => decideOpinion.mutate({ id, decision }, { onError: mutationError })}
           dirLabel={dirLabel}
           locale={locale}
           onOpenRun={setOpenGovernanceRun}
@@ -1007,11 +1017,19 @@ type UseKnowledgeGovernanceRuns = UseQueryResult<KnowledgeGovernanceRun[], Error
 
 function GovernanceRunsSegment({
   runs,
+  opinions,
+  canManage,
+  deciding,
+  onDecision,
   dirLabel,
   locale,
   onOpenRun,
 }: {
   runs: UseKnowledgeGovernanceRuns;
+  opinions: KnowledgeGovernanceOpinion[];
+  canManage: boolean;
+  deciding: boolean;
+  onDecision: (id: string, decision: "approve" | "reject") => void;
   dirLabel: (id: string) => string;
   locale: string;
   onOpenRun: (run: KnowledgeGovernanceRun) => void;
@@ -1049,7 +1067,15 @@ function GovernanceRunsSegment({
     );
   }
   return (
-    <div className="overflow-hidden rounded-lg border" data-testid="knowledge-governance-runs-table">
+    <div className="space-y-4">
+      {opinions.length ? <div className="space-y-3" data-testid="knowledge-governance-opinions">
+        {opinions.map((opinion) => <div key={opinion.id} className="rounded-lg border p-3">
+          <div className="flex items-center justify-between gap-2"><div><span className="font-medium">{opinion.action === "revise" ? "Revision" : "Deletion"}</span><span className="ml-2 text-caption text-muted-foreground">v{opinion.target_version} · {opinion.status}</span></div>
+          {canManage && opinion.status === "pending" ? <div className="flex gap-2"><Button size="sm" disabled={deciding} onClick={() => onDecision(opinion.id, "approve")}>Approve</Button><Button size="sm" variant="outline" disabled={deciding} onClick={() => onDecision(opinion.id, "reject")}>Reject</Button></div> : null}</div>
+          {opinion.action === "revise" ? <PromptDiffView current="" incoming={opinion.proposed_content} /> : <p className="mt-2 text-caption text-muted-foreground">This entry will be deprecated after approval.</p>}
+        </div>)}
+      </div> : null}
+      <div className="overflow-hidden rounded-lg border" data-testid="knowledge-governance-runs-table">
       <Table>
         <TableHeader>
           <TableRow>
@@ -1079,6 +1105,7 @@ function GovernanceRunsSegment({
           ))}
         </TableBody>
       </Table>
+      </div>
     </div>
   );
 }

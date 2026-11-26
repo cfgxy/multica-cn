@@ -5530,6 +5530,29 @@ export const KnowledgeEntryRestoreSchema = z.object({
   version: z.number().int().catch(0),
 }).loose();
 
+export const KnowledgeGovernanceConfigAuditSchema = z.object({
+  version: z.number().int().default(0),
+  actor_id: z.string().default(""),
+  before_value: z.record(z.string(), z.unknown()).default({}),
+  after_value: z.record(z.string(), z.unknown()).default({}),
+  created_at: z.string().default(""),
+}).loose();
+
+export const KnowledgeGovernanceConfigSchema = z.object({
+  enabled: z.boolean().catch(false),
+  agent_id: z.string().default(""),
+  agent_name: z.string().default(""),
+  cadence: z.enum(["daily", "weekly", "monthly"]).catch("daily"),
+  timezone: z.string().default("UTC"),
+  version: z.number().int().default(0),
+  source: z.enum(["default", "explicit"]).catch("default"),
+  updated_at: z.string().optional(),
+  executable: z.boolean().catch(false),
+  block_reason: z.string().optional(),
+  next_scheduled_at: z.string().optional(),
+  audit: z.array(KnowledgeGovernanceConfigAuditSchema).default([]),
+}).loose();
+
 export const KnowledgeGovernanceRunSchema = z.object({
   id: z.string().default(""),
   workspace_id: z.string().default(""),
@@ -5567,6 +5590,16 @@ export const KnowledgeGovernanceFindingSchema = z.object({
   created_at: z.string().default(""),
 }).loose();
 
+export const KnowledgeGovernanceOpinionSchema = z.object({
+  id: z.string().default(""), dir_id: z.string().default(""), entry_id: z.string().default(""),
+  run_id: z.string().default(""), finding_id: z.string().default(""),
+  action: z.enum(["revise", "delete"]).catch("revise"), proposed_content: z.string().default(""),
+  target_version: z.number().int().default(0), target_content_sha256: z.string().default(""),
+  status: z.enum(["pending", "approved", "rejected", "applying", "applied", "stale", "failed", "unknown"]).catch("unknown"),
+  created_at: z.string().default(""),
+}).loose();
+
+export const KnowledgeGovernanceOpinionListResponseSchema = z.object({ opinions: z.array(KnowledgeGovernanceOpinionSchema).default([]) }).loose();
 export const KnowledgeGovernanceRunListResponseSchema = z.object({
   runs: z.array(KnowledgeGovernanceRunSchema).default([]),
 }).loose();

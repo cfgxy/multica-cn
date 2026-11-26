@@ -2494,11 +2494,18 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 		// half, so traceability sits behind the rubric's own gate.
 		r.Route("/api/prompt-quiz", func(r chi.Router) {
 			r.Use(handler.RequireHumanActor)
-			r.Use(middleware.RequireWorkspaceRole(queries, "owner"))
-			r.Post("/bank/import", h.ImportPromptQuizBank)
-			r.Post("/batches", h.CreatePromptQuizBatch)
-			r.Get("/batches/{batchId}", h.GetPromptQuizBatch)
-			r.Get("/samples", h.GetPromptQuizSamples)
+			r.Group(func(r chi.Router) {
+				r.Use(middleware.RequireWorkspaceRole(queries, "owner", "admin"))
+				r.Get("/agents/{agentId}/scope", h.GetPromptQuizAgentScope)
+				r.Put("/agents/{agentId}/scope", h.PutPromptQuizAgentScope)
+			})
+			r.Group(func(r chi.Router) {
+				r.Use(middleware.RequireWorkspaceRole(queries, "owner"))
+				r.Post("/bank/import", h.ImportPromptQuizBank)
+				r.Post("/batches", h.CreatePromptQuizBatch)
+				r.Get("/batches/{batchId}", h.GetPromptQuizBatch)
+				r.Get("/samples", h.GetPromptQuizSamples)
+			})
 		})
 
 		// Prompt legislation (RUYI-305 E2): the rebuilt proposal pool. A
@@ -2603,6 +2610,13 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 				r.Get("/entries/{id}/lifecycle", h.GetKnowledgeEntryLifecycle)
 				r.Get("/governance/runs", h.ListKnowledgeGovernanceRuns)
 				r.Get("/governance/runs/{id}", h.GetKnowledgeGovernanceRun)
+				r.Get("/governance/opinions", h.ListKnowledgeGovernanceOpinions)
+				r.Get("/governance/config", h.GetKnowledgeGovernanceConfig)
+			})
+			r.Group(func(r chi.Router) {
+				r.Use(middleware.RequireWorkspaceRole(queries, "owner", "admin"))
+				r.Put("/governance/config", h.UpdateKnowledgeGovernanceConfig)
+				r.Post("/governance/opinions/{id}/{decision:approve|reject}", h.DecideKnowledgeGovernanceOpinion)
 			})
 			r.Group(func(r chi.Router) {
 				r.Use(middleware.RequireWorkspaceRole(queries, "owner"))

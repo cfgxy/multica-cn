@@ -334,7 +334,19 @@ func (q *Queries) DeleteRuntimeCredentialsByInstance(ctx context.Context, runtim
 }
 
 const deleteSystemAgentsByRuntime = `-- name: DeleteSystemAgentsByRuntime :exec
-DELETE FROM agent WHERE runtime_id = $1 AND kind = 'system'
+WITH targets AS (
+    SELECT id FROM agent WHERE runtime_id = $1 AND kind = 'system'
+),
+deleted_scope_items AS (
+    DELETE FROM prompt_quiz_agent_scope_item WHERE agent_id IN (SELECT id FROM targets)
+),
+deleted_scope_audit AS (
+    DELETE FROM prompt_quiz_agent_scope_audit WHERE agent_id IN (SELECT id FROM targets)
+),
+deleted_scopes AS (
+    DELETE FROM prompt_quiz_agent_scope WHERE agent_id IN (SELECT id FROM targets)
+)
+DELETE FROM agent WHERE id IN (SELECT id FROM targets)
 `
 
 // System agents are invisible execution infrastructure (for example the Agent
@@ -728,6 +740,15 @@ FROM agent_runtime r
 LEFT JOIN agent_task_queue t
   ON t.runtime_id = r.id
  AND t.status IN ('dispatched', 'running', 'waiting_local_directory')
+ AND NOT (
+     t.originator_source = 'quiz'
+     AND COALESCE((
+         SELECT c.enabled FROM prompt_quiz_schedule_control c
+         JOIN agent a ON a.workspace_id = c.workspace_id
+         WHERE a.id = t.agent_id AND (c.agent_id IS NULL OR c.agent_id = a.id)
+         ORDER BY c.agent_id NULLS LAST LIMIT 1
+     ), TRUE) = FALSE
+ )
 WHERE r.id = $1
 GROUP BY r.id
 `

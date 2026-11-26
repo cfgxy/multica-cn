@@ -14,14 +14,14 @@ import (
 // evidence-led reviews. Keep it stable once deployed.
 const JobNameKnowledgeGovernance = "knowledge_governance"
 
-// KnowledgeGovernanceJob reviews each live mirrored knowledge directory daily.
-// It reuses the platform scheduler's durable leases and retry records; the
-// agent work itself remains a normal asynchronous task owned by its run row.
+// KnowledgeGovernanceJob evaluates due workspace-local schedule windows every
+// hour. Runner.ListScheduleTargets enforces each persisted daily/weekly/monthly
+// bucket, keeping the scheduler lease durable without coupling to retrospective.
 func KnowledgeGovernanceJob(runner *knowledgegovernance.Runner) JobSpec {
 	return JobSpec{
 		Name:              JobNameKnowledgeGovernance,
-		Cadence:           24 * time.Hour,
-		ScheduleDelay:     30 * time.Minute,
+		Cadence:           time.Hour,
+		ScheduleDelay:     5 * time.Minute,
 		CatchUpMode:       CatchUpLatestOnly,
 		CatchUpWindow:     7 * 24 * time.Hour,
 		RunTimeout:        30 * time.Minute,
@@ -53,8 +53,10 @@ func makeKnowledgeGovernanceHandler(runner *knowledgegovernance.Runner) Handler 
 		result := make(map[string]any, len(targets))
 		var rows int64
 		for _, target := range targets {
-			stats, err := runner.RunWorkspace(ctx, target.WorkspaceID, target.DirID, target.ActorID, "schedule")
+			stats, err := runner.RunScheduledWorkspace(ctx, target)
 			switch {
+			case errors.Is(err, knowledgegovernance.ErrScheduleClaimed):
+				result[target.DirID] = map[string]any{"status": "skipped", "reason": "schedule_bucket_claimed"}
 			case errors.Is(err, knowledgegovernance.ErrNoExecutor):
 				result[target.DirID] = map[string]any{"status": "skipped", "reason": "agent_not_configured"}
 			case errors.Is(err, knowledgegovernance.ErrScopeRunning):

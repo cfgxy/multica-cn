@@ -1,0 +1,1 @@
+DROP INDEX CONCURRENTLY IF EXISTS prompt_quiz_agent_scope_workspace_idx;

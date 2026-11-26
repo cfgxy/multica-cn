@@ -136,24 +136,26 @@ func (h *Handler) CreatePromptQuizBatch(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	items, err := h.resolveBatchItems(r, workspaceID, req.ItemIDs)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to read quiz items")
-		return
-	}
-	if len(items) == 0 {
-		writeErrorCode(w, http.StatusUnprocessableEntity, "no_items", "no active quiz items match this batch")
-		return
-	}
-	if max := quizBatchMaxTotal; len(agents)*len(items) > max {
-		writeErrorCode(w, http.StatusUnprocessableEntity, "too_many_runs",
-			"this batch would order "+strconv.Itoa(len(agents)*len(items))+" runs; cap is "+strconv.Itoa(max))
-		return
-	}
-
 	batch := newQuizBatchID()
 	ordered := 0
 	for _, agent := range agents {
+		items, err := h.resolveBatchItems(r, workspaceID, agent.id, req.ItemIDs)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to read quiz items")
+			return
+		}
+		// An explicit empty scope is a valid policy outcome, not a fallback to
+		// the global bank. Skip only this agent so other requested scopes can
+		// still be measured.
+		if len(items) == 0 {
+			refused = append(refused, QuizBatchRefusedAgent{AgentID: uuidToString(agent.id), Reason: "no_eligible_items"})
+			continue
+		}
+		if max := quizBatchMaxTotal; ordered+len(items) > max {
+			writeErrorCode(w, http.StatusUnprocessableEntity, "too_many_runs",
+				"this batch would order more than "+strconv.Itoa(max)+" runs")
+			return
+		}
 		for _, item := range items {
 			payload, err := promptquizsweep.TaskContextPayloadWithRevision(uuid.UUID(item.id.Bytes).String(), item.title, item.body, item.revision, batch)
 			if err != nil {
@@ -197,45 +199,38 @@ type batchItem struct {
 }
 
 // resolveBatchItems turns the request's item selection into batchItems. Empty
-// selection means every active member-profile item (the sweep's enumeration);
-// a named selection must each exist and be active in this workspace.
-func (h *Handler) resolveBatchItems(r *http.Request, workspaceID pgtype.UUID, itemIDs []string) ([]batchItem, error) {
-	out := []batchItem{}
+// selection means every active item effective for the named agent. A named
+// selection is intersected with that same range, so manual batches cannot
+// bypass an explicit empty or restricted automatic policy.
+func (h *Handler) resolveBatchItems(r *http.Request, workspaceID, agentID pgtype.UUID, itemIDs []string) ([]batchItem, error) {
+	rows, err := h.Queries.ListActivePromptQuizItemsForProfile(r.Context(), db.ListActivePromptQuizItemsForProfileParams{
+		WorkspaceID: workspaceID, RuntimeProfile: "member", AgentID: agentID,
+	})
+	if err != nil {
+		return nil, err
+	}
+	allowed := make(map[string]batchItem, len(rows))
+	for _, row := range rows {
+		allowed[uuidToString(row.ID)] = batchItem{id: row.ID, title: row.Title, body: row.Body, revision: row.Revision}
+	}
 	if len(itemIDs) == 0 {
-		rows, err := h.Queries.ListActivePromptQuizItemsForProfile(r.Context(), db.ListActivePromptQuizItemsForProfileParams{
-			WorkspaceID:    workspaceID,
-			RuntimeProfile: "member",
-		})
-		if err != nil {
-			return nil, err
-		}
+		out := make([]batchItem, 0, len(rows))
 		for _, row := range rows {
-			out = append(out, batchItem{id: row.ID, title: row.Title, body: row.Body, revision: row.Revision})
+			out = append(out, allowed[uuidToString(row.ID)])
 		}
 		return out, nil
 	}
 
 	seen := map[string]bool{}
+	out := []batchItem{}
 	for _, raw := range itemIDs {
-		id, err := uuid.Parse(raw)
-		if err != nil || seen[raw] {
+		if seen[raw] {
 			continue
 		}
 		seen[raw] = true
-		item, err := h.Queries.GetPromptQuizItem(r.Context(), db.GetPromptQuizItemParams{
-			ID:          pgtype.UUID{Bytes: id, Valid: true},
-			WorkspaceID: workspaceID,
-		})
-		if errors.Is(err, pgx.ErrNoRows) {
-			continue
+		if item, ok := allowed[raw]; ok {
+			out = append(out, item)
 		}
-		if err != nil {
-			return nil, err
-		}
-		if !item.Active {
-			continue
-		}
-		out = append(out, batchItem{id: item.ID, title: item.Title, body: item.Body, revision: item.Revision})
 	}
 	return out, nil
 }

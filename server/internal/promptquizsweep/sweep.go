@@ -318,6 +318,7 @@ func (r Runner) enqueue(ctx context.Context, budget int) (int, error) {
 		items, err := r.Queries.ListActivePromptQuizItemsForProfile(ctx, db.ListActivePromptQuizItemsForProfileParams{
 			WorkspaceID:    s.WorkspaceID,
 			RuntimeProfile: "member",
+			AgentID:        s.AgentID,
 		})
 		if err != nil {
 			return n, fmt.Errorf("list quiz items: %w", err)

@@ -5,12 +5,12 @@ import (
 	"time"
 )
 
-func TestKnowledgeGovernanceJobUsesDurableDailyScheduling(t *testing.T) {
+func TestKnowledgeGovernanceJobChecksDurableWorkspaceScheduleHourly(t *testing.T) {
 	job := KnowledgeGovernanceJob(nil)
 	if job.Name != JobNameKnowledgeGovernance {
 		t.Fatalf("job name = %q, want %q", job.Name, JobNameKnowledgeGovernance)
 	}
-	if job.Cadence != 24*time.Hour || job.CatchUpMode != CatchUpLatestOnly {
+	if job.Cadence != time.Hour || job.CatchUpMode != CatchUpLatestOnly {
 		t.Fatalf("unexpected scheduling policy: cadence=%s catch_up=%v", job.Cadence, job.CatchUpMode)
 	}
 	if !job.AllowStaleReentry || job.MaxAttempts != 2 || len(job.RetryBackoff) != 1 || job.RetryBackoff[0] != 15*time.Minute {
