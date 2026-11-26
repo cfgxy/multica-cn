@@ -108,10 +108,17 @@ func (h *Handler) PutPromptQuizAgentScope(w http.ResponseWriter, r *http.Request
 		return
 	}
 	for _, itemID := range items {
-		var valid bool
-		err := tx.QueryRow(r.Context(), `SELECT EXISTS(SELECT 1 FROM prompt_quiz_item WHERE id = $1 AND workspace_id = $2 AND active AND runtime_profile = 'member')`, itemID, workspaceID).Scan(&valid)
-		if err != nil || !valid {
+		var lockedItem pgtype.UUID
+		err := tx.QueryRow(r.Context(), `
+SELECT id FROM prompt_quiz_item
+WHERE id = $1 AND workspace_id = $2 AND active AND runtime_profile = 'member'
+FOR KEY SHARE`, itemID, workspaceID).Scan(&lockedItem)
+		if errors.Is(err, pgx.ErrNoRows) {
 			writeError(w, http.StatusBadRequest, "item is not an active member-profile item in this workspace")
+			return
+		}
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to validate quiz item range")
 			return
 		}
 	}
