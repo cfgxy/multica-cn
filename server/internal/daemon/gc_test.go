@@ -27,14 +27,15 @@ func newGCTestDaemon(t *testing.T, handler http.Handler) *Daemon {
 
 	root := t.TempDir()
 	cfg := Config{
-		WorkspacesRoot:           root,
-		GCEnabled:                true,
-		GCInterval:               1 * time.Hour,
-		GCTTL:                    5 * 24 * time.Hour,
-		GCOrphanTTL:              30 * 24 * time.Hour,
-		GCArtifactTTL:            12 * time.Hour,
-		GCArtifactPatterns:       []string{"node_modules", ".next", ".turbo"},
-		GCRepoMaintenanceEnabled: true,
+		WorkspacesRoot:            root,
+		GCEnabled:                 true,
+		EnvironmentRecycleEnabled: true,
+		GCInterval:                1 * time.Hour,
+		GCTTL:                     5 * 24 * time.Hour,
+		GCOrphanTTL:               30 * 24 * time.Hour,
+		GCArtifactTTL:             12 * time.Hour,
+		GCArtifactPatterns:        []string{"node_modules", ".next", ".turbo"},
+		GCRepoMaintenanceEnabled:  true,
 	}
 	d := New(cfg, slog.Default())
 	d.client = NewClient(srv.URL)

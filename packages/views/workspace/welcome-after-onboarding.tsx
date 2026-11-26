@@ -15,6 +15,8 @@ import {
   Dialog,
   DialogContent,
   DialogDescription,
+  DialogFooter,
+  DialogHeader,
   DialogTitle,
 } from "@multica/ui/components/ui/dialog";
 import { useT } from "../i18n";
@@ -38,25 +40,39 @@ export function WelcomeAfterOnboarding() {
   const signal = useWelcomeStore((state) => state.signal);
   const dismissed = useWelcomeStore((state) => state.dismissed);
   const dismiss = useWelcomeStore((state) => state.dismiss);
+  const connectionWorkspaceId = useWelcomeStore((state) => state.connectionWorkspaceId);
+  const dismissConnection = useWelcomeStore((state) => state.dismissConnection);
 
   // The store is global while this component is workspace-scoped. Wait
   // until the matching workspace is visible before seeding guide issues.
-  if (
-    !me ||
-    !signal ||
-    dismissed ||
-    !currentWorkspace ||
-    currentWorkspace.id !== signal.workspaceId
-  ) {
-    return null;
+  if (!me || !currentWorkspace) return null;
+  if (signal && !dismissed && currentWorkspace.id === signal.workspaceId) {
+    return <SkipWelcome workspaceId={signal.workspaceId} onDismiss={dismiss} />;
   }
+  if (connectionWorkspaceId === currentWorkspace.id) {
+    return <LinuxUserConnectionPrompt workspaceSlug={currentWorkspace.slug} onDismiss={dismissConnection} />;
+  }
+  return null;
+}
 
-  return (
-    <SkipWelcome
-      workspaceId={signal.workspaceId}
-      onDismiss={dismiss}
-    />
-  );
+function LinuxUserConnectionPrompt({ workspaceSlug, onDismiss }: { workspaceSlug: string; onDismiss: () => void }) {
+  const { t } = useT("settings");
+  const navigation = useNavigation();
+  return <Dialog open modal onOpenChange={(open) => { if (!open) onDismiss(); }}>
+    <DialogContent className="max-w-md sm:max-w-md">
+      <DialogHeader>
+        <DialogTitle>{t(($) => $.workspace_linux_users.prompt_title)}</DialogTitle>
+        <DialogDescription>{t(($) => $.workspace_linux_users.prompt_description)}</DialogDescription>
+      </DialogHeader>
+      <DialogFooter>
+        <Button variant="outline" onClick={onDismiss}>{t(($) => $.workspace_linux_users.prompt_later)}</Button>
+        <Button onClick={() => {
+          onDismiss();
+          navigation.push(`${paths.workspace(workspaceSlug).settings()}?tab=linux-users`);
+        }}>{t(($) => $.workspace_linux_users.prompt_connect)}</Button>
+      </DialogFooter>
+    </DialogContent>
+  </Dialog>;
 }
 
 /**

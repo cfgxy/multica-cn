@@ -78,6 +78,7 @@ var corsAllowedHeaders = []string{
 	"Content-Type",
 	"Idempotency-Key",
 	"If-Match",
+	"Prefer",
 	"X-Workspace-ID",
 	"X-Workspace-Slug",
 	"X-Request-ID",
@@ -505,6 +506,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 		VCSIntegrationEnabled:            os.Getenv("MULTICA_VCS_INTEGRATION_ENABLED") == "true",
 		PublicURL:                        strings.TrimRight(strings.TrimSpace(os.Getenv("MULTICA_PUBLIC_URL")), "/"),
 		AppURL:                           appURLFromEnv(),
+		SelfTriggerSuppressionEnabled:    envBool("MULTICA_SELF_TRIGGER_SUPPRESSION_ENABLED", true),
 		TrustedProxies:                   parseTrustedProxies(os.Getenv("MULTICA_TRUSTED_PROXIES")),
 		CloudURL:                         strings.TrimSpace(os.Getenv("MULTICA_CLOUD_URL")),
 		CloudTimeout:                     35 * time.Second,
@@ -1631,6 +1633,8 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 	// The authenticated /api/attachments/{id}/download route below is
 	// unchanged — this one is purely additive.
 	r.Get("/api/attachments/{id}/signed-download", h.DownloadAttachmentWithCapability)
+	r.Get("/api/runtime-downloads/{operation}/{expiry}/{signature}/{source}/*", h.RuntimeDownload)
+	r.Head("/api/runtime-downloads/{operation}/{expiry}/{signature}/{source}/*", h.RuntimeDownload)
 
 	// Avatar serving. Public for the same reason as the capability download
 	// above: the auth cookie is SameSite=Strict, so an auth-gated URL cannot
@@ -1788,6 +1792,8 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 		r.Get("/chat-sessions/{sessionId}/gc-check", h.GetChatSessionGCCheck)
 		r.Get("/autopilot-runs/{runId}/gc-check", h.GetAutopilotRunGCCheck)
 		r.Get("/tasks/{taskId}/gc-check", h.GetTaskGCCheck)
+		r.Post("/workspaces/{workspaceId}/runtimes/{runtimeId}/tasks/gc-check", h.BatchTaskGCCheck)
+		r.Post("/workspaces/{workspaceId}/tasks/gc-check", h.BatchTaskGCCheck)
 
 		r.Post("/runtimes/{runtimeId}/recover-orphans", h.RecoverOrphanedTasks)
 		r.Post("/tasks/{taskId}/session", h.PinTaskSession)
@@ -1844,6 +1850,50 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 		// against it. Sits in the user-scoped group for that reason: there is
 		// no workspace in the path to gate on.
 		// --- User-scoped routes (no workspace context required) ---
+		r.With(handler.RequireHumanActor).Get("/api/me/computer-settings", h.ComputerSettings)
+		r.With(handler.RequireHumanActor).Get("/api/me/computer-bindings", h.ComputerBindings)
+		r.With(handler.RequireHumanActor).Post("/api/me/computer-bindings", h.ComputerBindings)
+		r.With(handler.RequireHumanActor).Get("/api/me/computer-bindings/{id}/runtimes", h.ComputerBindingRuntimes)
+		r.With(handler.RequireHumanActor).Get("/api/me/computer-bindings/{id}", h.ComputerBindingDetail)
+		r.With(handler.RequireHumanActor).Get("/api/me/computer-bindings/{id}/operations", h.ComputerBindingOperations)
+		r.With(handler.RequireHumanActor).Post("/api/me/computer-bindings/{id}/recover", h.RecoverComputerOperation)
+		r.With(handler.RequireHumanActor).Post("/api/me/computer-bindings/{id}/discover", h.DiscoverComputerBinding)
+		r.With(handler.RequireHumanActor).Post("/api/me/computer-bindings/{id}/check", h.CheckLinuxUser)
+		r.With(handler.RequireHumanActor).Post("/api/me/computer-bindings/{id}/lifecycle", h.ComputerBindingLifecycle)
+		r.With(handler.RequireHumanActor).Post("/api/me/computer-bindings/{id}/credentials/read", h.ReadComputerCredentials)
+		r.With(handler.RequireHumanActor).Post("/api/me/computer-bindings/{id}/credentials/write", h.WriteComputerCredentials)
+		r.With(handler.RequireHumanActor).Post("/api/me/computer-bindings/{id}/runtime-install", h.ComputerBindingRuntimeInstall)
+		r.With(handler.RequireHumanActor).Put("/api/me/computer-settings", h.ComputerSettings)
+		r.With(handler.RequireHumanActor).Get("/api/me/instance-access", h.InstanceAccess)
+		r.With(handler.RequireHumanActor).Get("/api/admin/computer-ssh-pubkey", h.AdminSshPubKey)
+		r.With(handler.RequireHumanActor).Get("/api/admin/computers", h.AdminComputers)
+		r.With(handler.RequireHumanActor).Get("/api/admin/runtime-cache", h.AdminRuntimeCache)
+		r.With(handler.RequireHumanActor).Get("/api/admin/model-key-users", h.AdminModelKeyUsers)
+		r.With(handler.RequireHumanActor).Get("/api/admin/model-key-source", h.AdminModelKeySource)
+		r.With(handler.RequireHumanActor).Put("/api/admin/model-key-source", h.AdminModelKeySource)
+		r.With(handler.RequireHumanActor).Get("/api/admin/model-key-directory", h.AdminModelKeyDirectory)
+		r.With(handler.RequireHumanActor).Post("/api/admin/model-key-directory/refresh", h.AdminModelKeyDirectoryRefresh)
+		r.With(handler.RequireHumanActor).Get("/api/admin/users/{id}/model-keys", h.AdminUserModelKeyGrants)
+		r.With(handler.RequireHumanActor).Put("/api/admin/users/{id}/model-keys", h.AdminUserModelKeyGrants)
+		r.With(handler.RequireHumanActor).Get("/api/admin/runtime-config-templates", h.AdminRuntimeConfigTemplateList)
+		r.With(handler.RequireHumanActor).Get("/api/admin/runtime-config-templates/{kind}", h.AdminRuntimeConfigTemplates)
+		r.With(handler.RequireHumanActor).Put("/api/admin/runtime-config-templates/{kind}", h.AdminRuntimeConfigTemplates)
+		r.With(handler.RequireHumanActor).Get("/api/me/computer-bindings/{id}/runtimes/{kind}/model-keys", h.MeModelKeyOptions)
+		r.With(handler.RequireHumanActor).Post("/api/me/computer-bindings/{id}/runtimes/{kind}/model-config/{action}", h.RuntimeModelConfig)
+		r.With(handler.RequireHumanActor).Post("/api/admin/runtime-cache/refresh", h.AdminRuntimeCacheRefresh)
+		r.With(handler.RequireHumanActor).Delete("/api/admin/runtime-cache", h.AdminRuntimeCacheClear)
+		r.With(handler.RequireHumanActor).Post("/api/admin/computers", h.AdminComputers)
+		r.With(handler.RequireHumanActor).Post("/api/admin/computers/check", h.CheckAdminComputerDraft)
+		r.With(handler.RequireHumanActor).Patch("/api/admin/computers/{id}", h.UpdateAdminComputer)
+		r.With(handler.RequireHumanActor).Delete("/api/admin/computers/{id}", h.DeleteAdminComputer)
+		r.With(handler.RequireHumanActor).Post("/api/admin/computers/{id}/check", h.CheckAdminComputer)
+		r.With(handler.RequireHumanActor).Get("/api/admin/computer-bindings", h.AdminComputerBindings)
+		r.With(handler.RequireHumanActor).Post("/api/admin/computer-bindings/{id}/check", h.AdminCheckLinuxUser)
+		r.With(handler.RequireHumanActor).Get("/api/admin/computer-bindings/{id}", h.AdminBindingDetail)
+		r.With(handler.RequireHumanActor).Get("/api/admin/computer-bindings/{id}/operations", h.AdminBindingOperations)
+		r.With(handler.RequireHumanActor).Get("/api/admin/computer-audit", h.AdminComputerAudit)
+		r.With(handler.RequireHumanActor).Get("/api/computers", h.Computers)
+		r.With(handler.RequireHumanActor).Post("/api/computers", h.Computers)
 		r.Get("/api/me", h.GetMe)
 		r.Get("/api/credentials/transport-key", h.GetCredentialTransportKey)
 		r.Post("/api/mcp/audit-start", h.StartMCPInvocationAudit)
@@ -2727,6 +2777,10 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Get("/metadata", h.ListIssueMetadata)
 					r.Put("/metadata/{key}", h.SetIssueMetadataKey)
 					r.Delete("/metadata/{key}", h.DeleteIssueMetadataKey)
+					r.Get("/outerloop", h.GetOuterLoopPlan)
+					r.Put("/outerloop", h.PutOuterLoopPlan)
+					r.Post("/outerloop/fire", h.FireOuterLoopPlan)
+					r.Post("/outerloop/stop", h.StopOuterLoopPlan)
 					r.Delete("/pull-requests/{pullRequestId}", h.UnlinkPullRequestFromIssue)
 					r.Put("/properties/{propertyId}", h.SetIssueProperty)
 					r.Delete("/properties/{propertyId}", h.DeleteIssueProperty)
@@ -3169,6 +3223,10 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					// body is ignored, and the operator trigger plus the
 					// background sweep share the handler.
 					r.Post("/credential-probe", h.RunCredentialProbe)
+					// Per-runtime cost budget (RUYI-665): read for anyone with
+					// runtime read access, write for the runtime owner only.
+					r.Get("/budget", h.GetRuntimeCostBudget)
+					r.Put("/budget", h.PutRuntimeCostBudget)
 				})
 			})
 

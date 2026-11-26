@@ -82,6 +82,11 @@ deleted_pins AS (
 deleted_daemon_tokens AS (
     DELETE FROM daemon_token WHERE daemon_token.workspace_id = $1
 ),
+detach_computer_bindings AS (
+    UPDATE computer_binding SET workspace_id = NULL, state = 'detached',
+        last_error = 'Workspace removed; select a workspace and provision again'
+    WHERE workspace_id = $1
+),
 detached_feedback AS (
     UPDATE feedback
     SET workspace_id = NULL
@@ -697,6 +702,10 @@ deleted_credentials AS (
 deleted_credential_connectors AS (
     DELETE FROM credential_connector WHERE workspace_id = $1
 ),
+deleted_runtime_cost_budgets AS (
+    DELETE FROM runtime_cost_budget
+    WHERE runtime_cost_budget.workspace_id = $1
+),
 deleted_runtime_credentials AS (
     DELETE FROM runtime_credential
     WHERE runtime_instance_id IN (
@@ -735,6 +744,9 @@ deleted_execution_profiles AS (
 DELETE FROM project WHERE project.workspace_id = $1
 `
 
+// runtime_cost_budget (RUYI-665) has no FK to agent_runtime (house rule), so
+// the sweep owns it; it carries workspace_id directly, so it needs no runtime
+// set join.
 // runtime_credential has no FK to agent_runtime (house rule), so the sweep
 // owns it: matched through the runtime set rather than a workspace column
 // (same construction as execution_profile_entry below). The encrypted

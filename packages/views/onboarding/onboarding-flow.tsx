@@ -239,8 +239,9 @@ function OnboardingStepFlow({
   }, [workspaces, onComplete]);
 
   const handleWorkspaceCreated = useCallback(
-    (ws: Workspace) => {
+    (ws: Workspace, created: boolean) => {
       setWorkspace(ws);
+      if (created) useWelcomeStore.getState().setConnectionWorkspace(ws.id);
       // Deliberately NOT setCurrentWorkspace: that singleton is also written by
       // the desktop tab system, which reclaims it whenever the new workspace
       // has no tab group yet. Racing it sent the rest of this flow — Mika, the

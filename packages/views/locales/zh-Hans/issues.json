@@ -535,14 +535,14 @@
     "trigger_blocked_runtime_offline": "该目标的运行时已离线",
     "trigger_blocked_runtime_unusable": "该目标的 CLI 在它所在的机器上无法运行 —— 需要在那台机器上重装",
     "trigger_blocked_agent_runtime_required": "该目标未绑定运行时——绑定后才能运行",
-	"trigger_blocked_agent_only_cascade_blocked": "为防止快速级联，该智能体交接链已暂停",
+    "trigger_blocked_agent_only_cascade_blocked": "为防止快速级联，该智能体交接链已暂停",
     "trigger_blocked_generic": "该目标不会被触发",
     "trigger_blocked_short_invocation_not_allowed": "找不到或无权限",
     "trigger_blocked_short_target_unavailable": "不可用",
     "trigger_blocked_short_runtime_offline": "运行时离线",
     "trigger_blocked_short_runtime_unusable": "CLI 无法运行",
     "trigger_blocked_short_agent_runtime_required": "需绑定运行时",
-	"trigger_blocked_short_agent_only_cascade_blocked": "快速交接已暂停",
+    "trigger_blocked_short_agent_only_cascade_blocked": "快速交接已暂停",
     "trigger_blocked_short_generic": "不会触发",
     "send_reply_failed": "发送回复失败",
     "delete_failed": "删除评论失败",
@@ -592,7 +592,9 @@
       "menu_label": "快速回复",
       "menu_empty": "空间管理员还没有配置快速回复",
       "insert_aria": "插入快速回复“{{name}}”"
-    }
+    },
+    "trigger_blocked_budget_exceeded": "该目标所在运行时已达费用额度，请在周期重置后重试",
+    "trigger_blocked_short_budget_exceeded": "额度已满"
   },
   "reply": {
     "placeholder": "回复..."
@@ -702,7 +704,11 @@
     "rerun_confirm_title": "重新运行此 task？",
     "rerun_confirm_body": "将在同一智能体上以当前配置开启全新会话重新运行，原运行保留在历史中不变。",
     "rerun_confirm_keep": "保持不变",
-    "rerun_confirm_confirm": "重新运行"
+    "rerun_confirm_confirm": "重新运行",
+    "unpriced_rows_other": "有 {{count}} 条算不出",
+    "day_today": "今天",
+    "day_yesterday": "昨天",
+    "day_runs_other": "{{count}} 次运行"
   },
   "usage_detail": {
     "title": "用量明细",
@@ -737,7 +743,8 @@
     "total": "合计",
     "note_unpriced_other": "有 {{count}} 次运行没有用量记录，不计入合计。",
     "note_unmapped": "{{models}} 没有维护价格，token 已计入，费用未计入。",
-    "note_estimate": "费用按各模型公开价目估算；供应商回报实际费用时以回报值为准。"
+    "note_estimate": "费用按各模型公开价目估算；供应商回报实际费用时以回报值为准。",
+    "kpi_unpriced_other": "有 {{count}} 条算不出"
   },
   "terminate_dialog": {
     "title": "确定停止该 task？",
@@ -1209,7 +1216,8 @@
     "raw_error": "原始错误",
     "lineage": "运行链",
     "lineage_rerun": "手动重跑",
-    "lineage_system_retry": "系统重试"
+    "lineage_system_retry": "系统重试",
+    "unpriced_rows_other": "有 {{count}} 条算不出"
   },
   "decisions": {
     "title": "决策卡片",
@@ -1240,7 +1248,6 @@
     "restore_failed": "恢复决策卡失败",
     "browser_done": "全部待决策卡已回答",
     "batch_title": "批量作答",
-    "batch_submit": "全部提交",
     "batch_submit": "全部提交",
     "auth_title": "授权请求",
     "auth_state_approved": "已同意",

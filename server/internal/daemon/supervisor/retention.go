@@ -117,11 +117,17 @@ func (g *RetentionGC) Run(ctx context.Context) (GCSummary, error) {
 	return summary, nil
 }
 
-// RemoveRun deletes a run's whole directory. The id is validated first so a
-// malformed id can never walk out of the runs root.
+// RemoveRun deletes a run's whole directory and its external short control
+// socket when one was allocated. The id is validated first so a malformed id
+// can never walk out of the runs root.
 func (m *Manager) RemoveRun(runID string) error {
 	if err := ValidateRunID(runID); err != nil {
 		return err
+	}
+	if man, err := m.ReadManifest(runID); err == nil && man.ControlSocket == shortControlSocketPath(runID) {
+		if err := os.Remove(man.ControlSocket); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("supervisor: remove external control socket: %w", err)
+		}
 	}
 	return os.RemoveAll(m.Dir(runID))
 }

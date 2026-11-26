@@ -6,6 +6,7 @@ import { ProviderLogo } from "../../runtimes/components/provider-logo";
 import { ActorAvatar } from "../../common/actor-avatar";
 import {
   isRuntimeUsableForUser,
+  defaultAgentRuntime,
   runtimeDisplayName,
   runtimeOfferableForBinding,
 } from "@multica/core/runtimes";
@@ -102,9 +103,9 @@ export function RuntimePicker({
   // runtime) is never silently overwritten.
   useEffect(() => {
     if (selectedRuntimeId !== "") return;
-    const firstUsable = filteredRuntimes.find((r) =>
-      isRuntimeUsableForUser(r, currentUserId, currentUserRole),
-    );
+    const firstUsable =
+      defaultAgentRuntime(filteredRuntimes, currentUserId) ??
+      filteredRuntimes.find((r) => isRuntimeUsableForUser(r, currentUserId, currentUserRole));
     if (firstUsable) onSelect(firstUsable.id);
   }, [
     filteredRuntimes,
@@ -127,9 +128,9 @@ export function RuntimePicker({
       currentUserRole,
       selectedRuntimeId,
     );
-    const firstUsable = nextList.find((r) =>
-      isRuntimeUsableForUser(r, currentUserId, currentUserRole),
-    );
+    const firstUsable =
+      defaultAgentRuntime(nextList, currentUserId) ??
+      nextList.find((r) => isRuntimeUsableForUser(r, currentUserId, currentUserRole));
     onSelect(firstUsable?.id ?? "");
   };
 

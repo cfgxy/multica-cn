@@ -28,7 +28,10 @@ export type InboxItemType =
   // System notifications are intentionally issue-less. Keep them in the
   // same Inbox model so read/archive/realtime behavior remains consistent.
   | "autopilot_paused"
-  | "autopilot_quota_exceeded";
+  | "autopilot_quota_exceeded"
+  // Per-runtime cost budget reached: emitted once per scope/period when an
+  // enqueue is refused with budget_exceeded (RUYI-665).
+  | "runtime_budget_exceeded";
 
 /**
  * One workspace's unread inbox count in the cross-workspace summary

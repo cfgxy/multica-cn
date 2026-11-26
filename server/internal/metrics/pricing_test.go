@@ -335,6 +335,14 @@ func TestPriceForModelAliasNoFalseBorrowing(t *testing.T) {
 		"qwen3.6-flash[]",
 		"qwen3.8-max[]",
 		"qwen3.8-max-preview[]",
+		// Cursor's generic ids must not resolve bare — `auto` is also what
+		// codex reports, so resolving it here would be a cross-provider
+		// misprice rather than a coverage win (RUYI-664).
+		"auto",
+		"composer-1",
+		"composer-2.5",
+		"codex/auto",
+		"openai/auto",
 	} {
 		if _, ok := PriceForModelAlias(model); ok {
 			t.Fatalf("PriceForModelAlias(%q) unexpectedly resolved", model)
@@ -487,5 +495,228 @@ func TestPriceForModelAliasAnthropicFable51(t *testing.T) {
 		if got, ok := PriceForModelAlias(model); ok {
 			t.Errorf("PriceForModelAlias(%q) resolved to %+v; want unmapped", model, got)
 		}
+	}
+}
+
+// TestPriceForModelProviderQualified pins the resolver entry point that takes
+// the reporter's provider into account. Bare `auto` must stay unmapped — codex
+// reports `auto` too, so a bare lookup would bill codex runs at Cursor's rate
+// — while `cursor` + `auto` reaches Cursor's own row. This is the exact
+// cross-provider misprice RUYI-664 was written to keep closed.
+func TestPriceForModelProviderQualified(t *testing.T) {
+	cursorAuto := ModelPrice{Provider: "cursor", Model: "auto", InputPerM: 1.25, CacheReadPerM: 0.25, CacheWritePerM: 0, OutputPerM: 6.00}
+
+	if got, ok := PriceForModel("auto", "cursor"); !ok || got != cursorAuto {
+		t.Fatalf("PriceForModel(\"auto\", \"cursor\") = %+v (ok=%v); want %+v", got, ok, cursorAuto)
+	}
+
+	// The collision this Issue is about: codex reports the SAME literal id.
+	// No qualified row exists for codex, and the bare fallback must not
+	// borrow Cursor's, so this stays unpriced.
+	if got, ok := PriceForModel("auto", "codex"); ok {
+		t.Fatalf("PriceForModel(\"auto\", \"codex\") = %+v; want unmapped — that is Cursor's rate on a codex run", got)
+	}
+	if got, ok := PriceForModel("auto", ""); ok {
+		t.Fatalf("PriceForModel(\"auto\", \"\") = %+v; want unmapped without a provider", got)
+	}
+
+	// An id that already carries its own provider is not doubled.
+	if got, ok := PriceForModel("cursor/auto", "cursor"); !ok || got != cursorAuto {
+		t.Fatalf("PriceForModel(\"cursor/auto\", \"cursor\") = %+v (ok=%v); want %+v", got, ok, cursorAuto)
+	}
+
+	// Cursor's own SKUs resolve qualified; another provider's prefix does not
+	// take the Cursor row via the bare fallback either.
+	composer := ModelPrice{Provider: "cursor", Model: "composer-2", InputPerM: 0.50, CacheReadPerM: 0.20, CacheWritePerM: 0, OutputPerM: 2.50}
+	if got, ok := PriceForModel("composer-2", "cursor"); !ok || got != composer {
+		t.Fatalf("PriceForModel(\"composer-2\", \"cursor\") = %+v (ok=%v); want %+v", got, ok, composer)
+	}
+	if got, ok := PriceForModel("composer-2", "codex"); ok {
+		t.Fatalf("PriceForModel(\"composer-2\", \"codex\") = %+v; want unmapped", got)
+	}
+
+	// A non-colliding model still resolves through the bare fallback when the
+	// reporter's provider has no qualified row.
+	kimi := ModelPrice{Provider: "moonshotai", Model: "kimi-k3", InputPerM: 3.0, CacheReadPerM: 0.30, CacheWritePerM: 3.0, OutputPerM: 15.0}
+	if got, ok := PriceForModel("kimi-k3", "codex"); !ok || got != kimi {
+		t.Fatalf("PriceForModel(\"kimi-k3\", \"codex\") = %+v (ok=%v); want %+v", got, ok, kimi)
+	}
+}
+
+// TestZhipuGLM5Priced pins the GLM family the Go table used to miss entirely,
+// so every local turn fell into the unpriced bucket and converted to $0.00. A
+// conversion that is always zero is worse than no conversion: a cost alert
+// sitting on top of it can never fire.
+//
+// The case also pins the shape that matters most here: cache_read dominates
+// real usage, so a row with the wrong cache rate under-prices by more than
+// the input row can correct.
+func TestZhipuGLM5Priced(t *testing.T) {
+	price, ok := PriceForModelAlias("glm-5")
+	if !ok {
+		t.Fatal("PriceForModelAlias(\"glm-5\") did not resolve; the glm family is missing from the Go table again")
+	}
+	want := ModelPrice{Provider: "zhipu", Model: "glm-5", InputPerM: 1.00, CacheReadPerM: 0.20, CacheWritePerM: 1.00, OutputPerM: 3.20}
+	if price != want {
+		t.Fatalf("PriceForModelAlias(\"glm-5\") = %+v, want %+v", price, want)
+	}
+
+	// A context tag is the same SKU at the same tier.
+	if got, ok := PriceForModelAlias("glm-5[1m]"); !ok || got != want {
+		t.Fatalf("PriceForModelAlias(\"glm-5[1m]\") = %+v (ok=%v); want %+v", got, ok, want)
+	}
+	// So is a provider-prefixed form, mirroring the Anthropic cases.
+	if got, ok := PriceForModelAlias("custom:glm-5"); !ok || got != want {
+		t.Fatalf("PriceForModelAlias(\"custom:glm-5\") = %+v (ok=%v); want %+v", got, ok, want)
+	}
+	// The 4.5 generation has its own rows at different rates; a family rule
+	// that swallowed them would bill -air at 5x and -flash (free) at 5x too.
+	for _, model := range []string{"glm-4.5-air", "glm-4.5-airx", "glm-4.5-flash", "glm-4.5-x"} {
+		if got, ok := PriceForModelAlias(model); !ok || got.Model == "glm-5" {
+			t.Fatalf("PriceForModelAlias(%q) = %+v (ok=%v); want its own row, not glm-5", model, got, ok)
+		}
+	}
+
+	// A median-sized real turn must convert to a non-zero cost.
+	const (
+		input     = 43_068
+		output    = 1_198
+		cacheRead = 240_128
+	)
+	got := EstimateUsageCost("glm-5", "zhipu", 0, input, output, cacheRead, 0)
+	if got.Source != CostSourceTable {
+		t.Fatalf("median turn source = %q; want %q", got.Source, CostSourceTable)
+	}
+	if got.USD <= 0 {
+		t.Fatalf("median turn cost = %v; want non-zero", got.USD)
+	}
+	// Guard the cache term specifically: it is the largest component, so a
+	// row that silently priced cache reads at 0 would still pass a loose
+	// "non-zero" check on the input term alone.
+	cacheTerm := tokenCostUSD(cacheRead, price.CacheReadPerM)
+	if cacheTerm <= 0 {
+		t.Fatalf("cache-read term = %v; want non-zero", cacheTerm)
+	}
+	if cacheTerm <= tokenCostUSD(input, price.InputPerM) {
+		t.Fatalf("cache-read term %v should exceed the input term %v at a cache:input ratio above 5:1",
+			cacheTerm, tokenCostUSD(input, price.InputPerM))
+	}
+}
+
+// TestEstimateUsageCostKeepsUnknownApartFromZero pins the four-state
+// conversion: provider-reported, table estimate, genuinely free, and unknown.
+// The two 0s are different states — folding unpriced rows into aggregates as
+// $0 quietly moves medians and never fires a budget alert.
+func TestEstimateUsageCostKeepsUnknownApartFromZero(t *testing.T) {
+	cases := []struct {
+		name  string
+		model string
+		// provider is the reporter, and it is part of the price lookup: some
+		// ids (`auto`) are only meaningful once you know who sent them.
+		// Empty means "no provider recorded", which is what the older rows
+		// look like and what the bare-model fallback exists for.
+		provider string
+		ticks    int64
+		in, out  int64
+		cr, cw   int64
+
+		wantSource CostSource
+		wantZero   bool
+	}{
+		{
+			name:     "provider price wins over the table",
+			model:    "glm-5",
+			provider: "zhipu",
+			ticks:    1_234_000_000,
+			in:       43_068, out: 1_198, cr: 240_128,
+			wantSource: CostSourceProvider,
+		},
+		{
+			name:  "rate table estimate",
+			model: "glm-5",
+			in:    43_068, out: 1_198, cr: 240_128,
+			wantSource: CostSourceTable,
+		},
+		{
+			name:     "unknown model, real tokens: unpriced",
+			model:    "unknown",
+			provider: "codex",
+			in:       28_833, out: 969, cr: 122_880,
+			wantSource: CostSourceUnpriced, wantZero: true,
+		},
+		{
+			name:  "free-tier model, real tokens: known free",
+			model: "glm-4.5-flash",
+			in:    28_833, out: 969, cr: 122_880,
+			wantSource: CostSourceZero, wantZero: true,
+		},
+		{
+			name:       "no tokens at all: genuinely free",
+			model:      "glm-5",
+			wantSource: CostSourceZero, wantZero: true,
+		},
+	}
+
+	for _, tc := range cases {
+		got := EstimateUsageCost(tc.model, tc.provider, tc.ticks, tc.in, tc.out, tc.cr, tc.cw)
+		if got.Source != tc.wantSource {
+			t.Errorf("%s: source = %q, want %q", tc.name, got.Source, tc.wantSource)
+		}
+		if tc.wantZero && got.USD != 0 {
+			t.Errorf("%s: USD = %v, want 0", tc.name, got.USD)
+		}
+		if !tc.wantZero && got.USD <= 0 {
+			t.Errorf("%s: USD = %v, want > 0", tc.name, got.USD)
+		}
+	}
+
+	// The two 0s are different: only one of them may enter an aggregate.
+	unknown := EstimateUsageCost("unknown", "codex", 0, 28_833, 969, 122_880, 0)
+	free := EstimateUsageCost("glm-5", "", 0, 0, 0, 0, 0)
+	freeTier := EstimateUsageCost("glm-4.5-flash", "zhipu", 0, 28_833, 969, 122_880, 0)
+	if unknown.Priceable() {
+		t.Error("unpriced row is Priceable(); it must be excluded from medians and budgets")
+	}
+	if !free.Priceable() {
+		t.Error("genuinely free row is not Priceable(); a real 0 belongs in the median")
+	}
+	if !freeTier.Priceable() {
+		t.Error("known-free-tier row is not Priceable(); a real 0 belongs in the median")
+	}
+}
+
+// TestEstimateUsageCostPricesARealIssuesRows prices the four usage rows of one
+// real issue the way the Issue page prices them.
+//
+// This is the issue-level half of "one price list, one number" (RUYI-664): a
+// whole issue's rows, not hand-picked ones. A mismatch here means the Issue
+// page and the CLI disagree about what the issue cost.
+//
+// Mirrored in packages/views/runtimes/utils.test.ts; both sides pin 0.392574.
+func TestEstimateUsageCostPricesARealIssuesRows(t *testing.T) {
+	type row struct{ in, out, cacheRead int64 }
+	rows := []row{
+		{14_487, 696, 108_800},
+		{8_753, 501, 122_752},
+		{2_645, 303, 102_912},
+		{2_173, 134, 72_064},
+	}
+
+	wantPerRow := []float64{0.147715, 0.120171, 0.073771, 0.050917}
+	const wantTotal = 0.392574
+
+	var total float64
+	for i, r := range rows {
+		got := EstimateUsageCost("gpt-5.6-sol", "codex", 0, r.in, r.out, r.cacheRead, 0)
+		if got.Source != CostSourceTable {
+			t.Fatalf("row %d: source = %q, want %q", i, got.Source, CostSourceTable)
+		}
+		if diff := got.USD - wantPerRow[i]; diff > 0.0000005 || diff < -0.0000005 {
+			t.Errorf("row %d: USD = %.6f, want %.6f", i, got.USD, wantPerRow[i])
+		}
+		total += got.USD
+	}
+	if diff := total - wantTotal; diff > 0.0000005 || diff < -0.0000005 {
+		t.Errorf("issue total = %.6f, want %.6f", total, wantTotal)
 	}
 }

@@ -6329,6 +6329,30 @@ func (q *Queries) GetLastTaskStartedAtForIssueAndAgent(ctx context.Context, arg 
 	return started_at, err
 }
 
+const getLastTerminalTaskCompletedAtForIssueAndAgent = `-- name: GetLastTerminalTaskCompletedAtForIssueAndAgent :one
+SELECT completed_at FROM agent_task_queue
+WHERE issue_id = $1 AND agent_id = $2 AND status IN ('completed', 'failed', 'cancelled')
+  AND completed_at IS NOT NULL
+ORDER BY completed_at DESC
+LIMIT 1
+`
+
+type GetLastTerminalTaskCompletedAtForIssueAndAgentParams struct {
+	IssueID pgtype.UUID `json:"issue_id"`
+	AgentID pgtype.UUID `json:"agent_id"`
+}
+
+// RUYI-660: when the (issue, agent) pair's most recent terminal task
+// settled. The stall sweep uses it as the grace window — a task that just
+// terminalized is still within the completion hook's evaluation window and
+// the sweep must not race it. pgx.ErrNoRows means no terminal task exists.
+func (q *Queries) GetLastTerminalTaskCompletedAtForIssueAndAgent(ctx context.Context, arg GetLastTerminalTaskCompletedAtForIssueAndAgentParams) (pgtype.Timestamptz, error) {
+	row := q.db.QueryRow(ctx, getLastTerminalTaskCompletedAtForIssueAndAgent, arg.IssueID, arg.AgentID)
+	var completed_at pgtype.Timestamptz
+	err := row.Scan(&completed_at)
+	return completed_at, err
+}
+
 const getLatestChatTaskRolloutMissing = `-- name: GetLatestChatTaskRolloutMissing :one
 SELECT COALESCE(session_rollout_missing, FALSE) FROM agent_task_queue
 WHERE chat_session_id = $1
@@ -8019,6 +8043,60 @@ func (q *Queries) ListChatFinalizeDeferredExpired(ctx context.Context, arg ListC
 			&i.NoActionReason,
 			&i.CommentOutputAt,
 		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listDueDeferredTasksForBudgetGate = `-- name: ListDueDeferredTasksForBudgetGate :many
+SELECT t.id, t.runtime_id, t.agent_id
+FROM agent_task_queue t
+WHERE t.runtime_id = ANY($1::uuid[])
+  AND t.status = 'deferred'
+  AND t.fire_at <= now()
+  AND EXISTS (
+    SELECT 1 FROM agent_runtime r
+    WHERE r.id = t.runtime_id
+      AND r.status = 'online'
+      AND COALESCE(r.last_seen_at, r.updated_at) >=
+          now() - make_interval(secs => $2::double precision)
+  )
+`
+
+type ListDueDeferredTasksForBudgetGateParams struct {
+	RuntimeIds       []pgtype.UUID `json:"runtime_ids"`
+	RuntimeStaleSecs float64       `json:"runtime_stale_secs"`
+}
+
+type ListDueDeferredTasksForBudgetGateRow struct {
+	ID        pgtype.UUID `json:"id"`
+	RuntimeID pgtype.UUID `json:"runtime_id"`
+	AgentID   pgtype.UUID `json:"agent_id"`
+}
+
+// The due set the deferred-fallback promoters are about to promote, read just
+// before them so the runtime cost budget gate (RUYI-665) can veto rows whose
+// agent's runtime budget is spent. Mirrors the status / fire_at / online
+// fence of the promoters' due CTE, but deliberately omits the occupant and
+// rn fences: the budget verdict is per agent, and a row that would lose its
+// slot race anyway still names its agent — dropping it here could hide the
+// only due row of a blocked agent. Cheap by construction: deferred rows are
+// rare and the verdict is computed once per distinct agent, not per row.
+func (q *Queries) ListDueDeferredTasksForBudgetGate(ctx context.Context, arg ListDueDeferredTasksForBudgetGateParams) ([]ListDueDeferredTasksForBudgetGateRow, error) {
+	rows, err := q.db.Query(ctx, listDueDeferredTasksForBudgetGate, arg.RuntimeIds, arg.RuntimeStaleSecs)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListDueDeferredTasksForBudgetGateRow{}
+	for rows.Next() {
+		var i ListDueDeferredTasksForBudgetGateRow
+		if err := rows.Scan(&i.ID, &i.RuntimeID, &i.AgentID); err != nil {
 			return nil, err
 		}
 		items = append(items, i)
@@ -10519,12 +10597,13 @@ WITH due AS (
     WHERE t.runtime_id = $1
       AND t.status = 'deferred'
       AND t.fire_at <= now()
+      AND t.id <> ALL($2::uuid[])
       AND EXISTS (
         SELECT 1 FROM agent_runtime r
         WHERE r.id = t.runtime_id
           AND r.status = 'online'
           AND COALESCE(r.last_seen_at, r.updated_at) >=
-              now() - make_interval(secs => $2::double precision)
+              now() - make_interval(secs => $3::double precision)
       )
       AND NOT EXISTS (
         SELECT 1 FROM agent_task_queue occupant
@@ -10544,8 +10623,9 @@ RETURNING id, agent_id, issue_id, status, priority, dispatched_at, started_at, c
 `
 
 type PromoteDueDeferredTasksForRuntimeParams struct {
-	RuntimeID        pgtype.UUID `json:"runtime_id"`
-	RuntimeStaleSecs float64     `json:"runtime_stale_secs"`
+	RuntimeID        pgtype.UUID   `json:"runtime_id"`
+	ExcludedIds      []pgtype.UUID `json:"excluded_ids"`
+	RuntimeStaleSecs float64       `json:"runtime_stale_secs"`
 }
 
 // Promotion is fenced against the single queued/dispatched slot
@@ -10563,8 +10643,15 @@ type PromoteDueDeferredTasksForRuntimeParams struct {
 // promoted by a later tick once the slot frees, so nothing is lost — the human's
 // rerun simply goes first. Chat / quick-create rows (issue_id NULL) are outside
 // the index and bypass both fences.
+//
+// RUYI-665: the runtime cost budget gate runs just before this query and
+// passes the task IDs it vetoes via excluded_ids, which the due CTE drops
+// here. A vetoed row stays deferred with fire_at in the past — the same
+// "promoted by a later tick" recovery the occupant fence relies on, so the
+// task comes back once the budget period resets. An empty array vetoes
+// nothing (id <> ALL('{}') is vacuously true).
 func (q *Queries) PromoteDueDeferredTasksForRuntime(ctx context.Context, arg PromoteDueDeferredTasksForRuntimeParams) ([]AgentTaskQueue, error) {
-	rows, err := q.db.Query(ctx, promoteDueDeferredTasksForRuntime, arg.RuntimeID, arg.RuntimeStaleSecs)
+	rows, err := q.db.Query(ctx, promoteDueDeferredTasksForRuntime, arg.RuntimeID, arg.ExcludedIds, arg.RuntimeStaleSecs)
 	if err != nil {
 		return nil, err
 	}
@@ -10661,12 +10748,13 @@ WITH due AS (
     WHERE t.runtime_id = ANY($1::uuid[])
       AND t.status = 'deferred'
       AND t.fire_at <= now()
+      AND t.id <> ALL($2::uuid[])
       AND EXISTS (
         SELECT 1 FROM agent_runtime r
         WHERE r.id = t.runtime_id
           AND r.status = 'online'
           AND COALESCE(r.last_seen_at, r.updated_at) >=
-              now() - make_interval(secs => $2::double precision)
+              now() - make_interval(secs => $3::double precision)
       )
       AND NOT EXISTS (
         SELECT 1 FROM agent_task_queue occupant
@@ -10687,14 +10775,17 @@ RETURNING id, agent_id, issue_id, status, priority, dispatched_at, started_at, c
 
 type PromoteDueDeferredTasksForRuntimesParams struct {
 	RuntimeIds       []pgtype.UUID `json:"runtime_ids"`
+	ExcludedIds      []pgtype.UUID `json:"excluded_ids"`
 	RuntimeStaleSecs float64       `json:"runtime_stale_secs"`
 }
 
 // Batch variant of PromoteDueDeferredTasksForRuntime (MUL-4257): promotes all
 // due deferred tasks across the runtime set in one UPDATE. Carries the same two
-// fences as the singular query; see its comment for why.
+// fences as the singular query; see its comment for why. The singular query's
+// RUYI-665 budget veto applies here identically: excluded_ids carries the
+// blocked task IDs and a vetoed row stays deferred for a later tick.
 func (q *Queries) PromoteDueDeferredTasksForRuntimes(ctx context.Context, arg PromoteDueDeferredTasksForRuntimesParams) ([]AgentTaskQueue, error) {
-	rows, err := q.db.Query(ctx, promoteDueDeferredTasksForRuntimes, arg.RuntimeIds, arg.RuntimeStaleSecs)
+	rows, err := q.db.Query(ctx, promoteDueDeferredTasksForRuntimes, arg.RuntimeIds, arg.ExcludedIds, arg.RuntimeStaleSecs)
 	if err != nil {
 		return nil, err
 	}

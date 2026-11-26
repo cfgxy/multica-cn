@@ -66,6 +66,10 @@ export function useTypeLabels(): Record<InboxItemType, string> {
       "types.autopilot_quota_exceeded",
       "Autopilot run limit reached",
     ),
+    runtime_budget_exceeded: t(
+      "types.runtime_budget_exceeded",
+      "Runtime cost budget reached",
+    ),
   };
 }
 
@@ -188,6 +192,11 @@ export function InboxDetailLabel({
       }
       case "autopilot_quota_exceeded":
         return t("labels.autopilot_quota_blocked", "Run blocked because the limit was reached");
+      // Mirrors web's runtime_budget_blocked label (RUYI-665): the inbox row
+      // must carry the "refused until the period resets" detail, not just the
+      // generic type name.
+      case "runtime_budget_exceeded":
+        return t("labels.runtime_budget_blocked", "New runs are refused until the period resets");
       default:
         return typeLabel[item.type] ?? item.type;
     }

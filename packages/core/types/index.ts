@@ -127,6 +127,12 @@ export type {
   RuntimeResources,
   SchedulingPauseScope,
   SchedulingPauseState,
+  RuntimeBudgetPeriodKey,
+  RuntimeBudgetPeriod,
+  RuntimeBudgetScope,
+  RuntimeCostBudget,
+  RuntimeBudgetScopeInput,
+  RuntimeCostBudgetInput,
 } from "./agent";
 export { RUNTIME_PROFILE_PROTOCOL_FAMILIES, CANCEL_UNCONFIRMED_AFTER_MS } from "./agent";
 export type { PromptProposal, PromptProposalDraftRequest, PromptProposalCarrierScope, PromptProposalChangeKind, LegislationGateFinding, PromptProposalMergeRef, LegislationDiffLine, PromptProposalPreview, PromptProposalBatchOutcome, RetrospectiveConfig, RetrospectiveRun, RetrospectiveRunStats, RetrospectiveRunTriggerResponse, RetrospectiveConfigPatch, RetrospectiveRunDetail } from "./legislation";

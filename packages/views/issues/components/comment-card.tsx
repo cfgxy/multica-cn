@@ -1,5 +1,7 @@
 "use client";
 
+import { useQueryClient } from "@tanstack/react-query";
+import { issueKeys } from "@multica/core/issues/queries";
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { CheckCircle2, ChevronRight, ListChevronsDownUp, Copy, Loader2, MessageSquarePlus, MoreHorizontal, Pencil, RotateCcw, Trash2 } from "lucide-react";
 import { toast } from "sonner";
@@ -284,6 +286,7 @@ function TaskCommentRetryButton({
   className?: string;
 }) {
   const { t } = useT("issues");
+  const queryClient = useQueryClient();
   const [retrying, setRetrying] = useState(false);
 
   const handleRetry = async () => {
@@ -291,6 +294,7 @@ function TaskCommentRetryButton({
     setRetrying(true);
     try {
       await api.rerunIssue(issueId, taskId);
+      await queryClient.invalidateQueries({ queryKey: issueKeys.tasks(issueId) });
     } catch (e) {
       // Rerun re-checks the operator's invoke permission (MUL-4525); a
       // structured 403 is a permission block, not a transient failure.
