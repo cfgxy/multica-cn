@@ -731,7 +731,11 @@
     "rerun_confirm_keep": "Keep as is",
     "rerun_confirm_confirm": "Run again",
     "unpriced_rows_one": "{{count}} row unpriced",
-    "unpriced_rows_other": "{{count}} rows unpriced"
+    "unpriced_rows_other": "{{count}} rows unpriced",
+    "day_today": "Today",
+    "day_yesterday": "Yesterday",
+    "day_runs_one": "{{count}} run",
+    "day_runs_other": "{{count}} runs"
   },
   "usage_detail": {
     "title": "Usage breakdown",

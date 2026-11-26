@@ -1939,6 +1939,39 @@ describe("summarizeTaskUsage", () => {
     expect(s!.priced).toBe(false);
     expect(s!.cost).toBe(0);
   });
+
+  it("accumulates modelCallCount and modelCallUnknownCount across slices", () => {
+    const s = summarizeTaskUsage([
+      {
+        model: "claude-opus-5",
+        input_tokens: 100,
+        output_tokens: 50,
+        cache_read_tokens: 0,
+        cache_write_tokens: 0,
+        model_call_count: 3,
+      },
+      {
+        model: "claude-sonnet-4-6",
+        input_tokens: 200,
+        output_tokens: 25,
+        cache_read_tokens: 0,
+        cache_write_tokens: 0,
+      },
+      {
+        model: "claude-opus-5",
+        input_tokens: 50,
+        output_tokens: 10,
+        cache_read_tokens: 0,
+        cache_write_tokens: 0,
+        model_call_count: 2,
+      },
+    ]);
+
+    expect(s!.modelCallCount).toBe(5);
+    expect(s!.modelCallUnknownCount).toBe(1);
+    expect(s!.priced).toBe(true);
+    expect(s!.unpricedRows).toBe(0);
+  });
 });
 
 describe("summarizeTaskUsageAcross", () => {

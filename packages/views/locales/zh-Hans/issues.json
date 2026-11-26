@@ -705,7 +705,10 @@
     "rerun_confirm_body": "将在同一智能体上以当前配置开启全新会话重新运行，原运行保留在历史中不变。",
     "rerun_confirm_keep": "保持不变",
     "rerun_confirm_confirm": "重新运行",
-    "unpriced_rows_other": "有 {{count}} 条算不出"
+    "unpriced_rows_other": "有 {{count}} 条算不出",
+    "day_today": "今天",
+    "day_yesterday": "昨天",
+    "day_runs_other": "{{count}} 次运行"
   },
   "usage_detail": {
     "title": "用量明细",
