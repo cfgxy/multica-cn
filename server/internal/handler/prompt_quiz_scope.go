@@ -100,7 +100,7 @@ func (h *Handler) PutPromptQuizAgentScope(w http.ResponseWriter, r *http.Request
 	}
 	defer tx.Rollback(r.Context()) //nolint:errcheck
 	var agentWorkspace pgtype.UUID
-	if err := tx.QueryRow(r.Context(), `SELECT workspace_id FROM agent WHERE id = $1 FOR KEY SHARE`, agentID).Scan(&agentWorkspace); errors.Is(err, pgx.ErrNoRows) || uuidToString(agentWorkspace) != uuidToString(workspaceID) {
+	if err := tx.QueryRow(r.Context(), `SELECT workspace_id FROM agent WHERE id = $1 FOR UPDATE`, agentID).Scan(&agentWorkspace); errors.Is(err, pgx.ErrNoRows) || uuidToString(agentWorkspace) != uuidToString(workspaceID) {
 		writeError(w, http.StatusNotFound, "agent not found in this workspace")
 		return
 	} else if err != nil {
@@ -114,6 +114,11 @@ func (h *Handler) PutPromptQuizAgentScope(w http.ResponseWriter, r *http.Request
 			writeError(w, http.StatusBadRequest, "item is not an active member-profile item in this workspace")
 			return
 		}
+	}
+	var beforeExplicit bool
+	if err := tx.QueryRow(r.Context(), `SELECT EXISTS(SELECT 1 FROM prompt_quiz_agent_scope WHERE agent_id = $1)`, agentID).Scan(&beforeExplicit); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to read quiz item range")
+		return
 	}
 	beforeIDs := []string{}
 	beforeRows, queryErr := tx.Query(r.Context(), `SELECT item_id FROM prompt_quiz_agent_scope_item WHERE agent_id = $1 ORDER BY item_id`, agentID)
@@ -146,7 +151,7 @@ func (h *Handler) PutPromptQuizAgentScope(w http.ResponseWriter, r *http.Request
 		}
 	}
 	if err == nil {
-		_, err = tx.Exec(r.Context(), `INSERT INTO prompt_quiz_agent_scope_audit(workspace_id, agent_id, actor_id, before_item_ids, after_item_ids) VALUES ($1, $2, $3, $4::jsonb, $5::jsonb)`, workspaceID, agentID, requestUserID(r), beforeJSON, afterJSON)
+		_, err = tx.Exec(r.Context(), `INSERT INTO prompt_quiz_agent_scope_audit(workspace_id, agent_id, actor_id, before_explicit, after_explicit, before_item_ids, after_item_ids) VALUES ($1, $2, $3, $4, TRUE, $5::jsonb, $6::jsonb)`, workspaceID, agentID, requestUserID(r), beforeExplicit, beforeJSON, afterJSON)
 	}
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to save quiz item range")
