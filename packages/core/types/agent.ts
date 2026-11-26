@@ -1418,6 +1418,9 @@ export interface KnowledgeGovernanceConfig {
   version: number;
   source: "default" | "explicit";
   updated_at?: string;
+  executable: boolean;
+  block_reason?: string;
+  next_scheduled_at?: string;
   audit: KnowledgeGovernanceConfigAudit[];
 }
 

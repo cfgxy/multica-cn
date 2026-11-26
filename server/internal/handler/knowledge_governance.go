@@ -230,15 +230,18 @@ ORDER BY created_at ASC`, run.ID, run.WorkspaceID)
 }
 
 type knowledgeGovernanceConfigResponse struct {
-	Enabled   bool                                     `json:"enabled"`
-	AgentID   string                                   `json:"agent_id"`
-	AgentName string                                   `json:"agent_name"`
-	Cadence   string                                   `json:"cadence"`
-	Timezone  string                                   `json:"timezone"`
-	Version   int32                                    `json:"version"`
-	Source    string                                   `json:"source"`
-	UpdatedAt string                                   `json:"updated_at,omitempty"`
-	Audit     []knowledgeGovernanceConfigAuditResponse `json:"audit"`
+	Enabled         bool                                     `json:"enabled"`
+	AgentID         string                                   `json:"agent_id"`
+	AgentName       string                                   `json:"agent_name"`
+	Cadence         string                                   `json:"cadence"`
+	Timezone        string                                   `json:"timezone"`
+	Version         int32                                    `json:"version"`
+	Source          string                                   `json:"source"`
+	UpdatedAt       string                                   `json:"updated_at,omitempty"`
+	Executable      bool                                     `json:"executable"`
+	BlockReason     string                                   `json:"block_reason,omitempty"`
+	NextScheduledAt string                                   `json:"next_scheduled_at,omitempty"`
+	Audit           []knowledgeGovernanceConfigAuditResponse `json:"audit"`
 }
 
 type knowledgeGovernanceConfigAuditResponse struct {
@@ -259,6 +262,29 @@ type knowledgeGovernanceConfigRow struct {
 	UpdatedAt pgtype.Timestamptz
 }
 
+func nextGovernanceSchedule(now time.Time, cadence, timezone string) (time.Time, error) {
+	loc, err := time.LoadLocation(timezone)
+	if err != nil {
+		return time.Time{}, err
+	}
+	local := now.In(loc)
+	startOfTomorrow := time.Date(local.Year(), local.Month(), local.Day()+1, 0, 0, 0, 0, loc)
+	switch cadence {
+	case "daily":
+		return startOfTomorrow, nil
+	case "weekly":
+		days := (int(time.Monday) - int(local.Weekday()) + 7) % 7
+		if days == 0 {
+			days = 7
+		}
+		return time.Date(local.Year(), local.Month(), local.Day()+days, 0, 0, 0, 0, loc), nil
+	case "monthly":
+		return time.Date(local.Year(), local.Month()+1, 1, 0, 0, 0, 0, loc), nil
+	default:
+		return time.Time{}, fmt.Errorf("invalid cadence %q", cadence)
+	}
+}
+
 func (h *Handler) governanceConfig(ctx context.Context, workspaceID pgtype.UUID) (knowledgeGovernanceConfigRow, error) {
 	var cfg knowledgeGovernanceConfigRow
 	err := h.DB.QueryRow(ctx, `
@@ -273,7 +299,7 @@ func (h *Handler) governanceConfigResponse(ctx context.Context, workspaceID pgty
 	cfg, err := h.governanceConfig(ctx, workspaceID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return knowledgeGovernanceConfigResponse{
-			Enabled: false, Cadence: "daily", Timezone: "UTC", Source: "default", Audit: []knowledgeGovernanceConfigAuditResponse{},
+			Enabled: false, Cadence: "daily", Timezone: "UTC", Source: "default", BlockReason: "disabled", Audit: []knowledgeGovernanceConfigAuditResponse{},
 		}, nil
 	}
 	if err != nil {
@@ -283,13 +309,18 @@ func (h *Handler) governanceConfigResponse(ctx context.Context, workspaceID pgty
 		Enabled: cfg.Enabled, AgentID: uuidToString(cfg.AgentID), Cadence: cfg.Cadence, Timezone: cfg.Timezone,
 		Version: cfg.Version, Source: "explicit", Audit: []knowledgeGovernanceConfigAuditResponse{},
 	}
-	if cfg.UpdatedAt.Valid {
-		response.UpdatedAt = cfg.UpdatedAt.Time.UTC().Format(httpTimeFormat)
-	}
-	if cfg.AgentID.Valid {
-		if agent, agentErr := h.Queries.GetAgent(ctx, cfg.AgentID); agentErr == nil {
-			response.AgentName = agent.Name
-		}
+	if !cfg.Enabled {
+		response.BlockReason = "disabled"
+	} else if !cfg.AgentID.Valid {
+		response.BlockReason = "agent_not_configured"
+	} else if agent, agentErr := h.Queries.GetAgent(ctx, cfg.AgentID); agentErr != nil || agent.ArchivedAt.Valid || !agent.RuntimeID.Valid {
+		response.BlockReason = "agent_unavailable"
+	} else if next, nextErr := nextGovernanceSchedule(time.Now(), cfg.Cadence, cfg.Timezone); nextErr != nil {
+		response.BlockReason = "invalid_schedule"
+	} else {
+		response.AgentName = agent.Name
+		response.Executable = true
+		response.NextScheduledAt = next.UTC().Format(httpTimeFormat)
 	}
 	rows, err := h.DB.Query(ctx, `
 SELECT config_version, actor_id, before_value, after_value, created_at

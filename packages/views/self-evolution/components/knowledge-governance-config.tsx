@@ -65,6 +65,7 @@ export function KnowledgeGovernanceConfig({ wsId }: { wsId: string }) {
         {canManage ? <Button size="sm" disabled={save.isPending} onClick={() => save.mutate({ enabled, agent_id: agentId, cadence, timezone }, { onError: (error) => toast.error(clientErrorMessage(error) ?? "保存治理配置失败") })}>保存</Button> : null}
       </div>
       <p className="text-muted-foreground text-caption" data-testid="knowledge-governance-config-source">来源：{config.data?.source === "explicit" ? "工作区配置" : "默认关闭"} · 版本：{config.data?.version ?? 0}</p>
+      {config.data?.executable && config.data.next_scheduled_at ? <p className="text-muted-foreground text-caption" data-testid="knowledge-governance-next-schedule">下一次计划：{config.data.next_scheduled_at}</p> : <p className="text-muted-foreground text-caption" data-testid="knowledge-governance-not-executable">不可执行：{config.data?.block_reason === "disabled" ? "已关闭" : "未配置可运行 Agent"}</p>}
       {config.data?.audit[0] ? <p className="text-muted-foreground text-caption">最近配置审计：版本 {config.data.audit[0].version}，{config.data.audit[0].created_at}</p> : null}
     </section>
   );

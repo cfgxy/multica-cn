@@ -29,7 +29,7 @@ const m = vi.hoisted(() => ({
   events: [] as KnowledgeLifecycleEvent[],
   governanceRuns: [] as KnowledgeGovernanceRun[],
   governanceConfig: {
-    enabled: false, agent_id: "", agent_name: "", cadence: "daily", timezone: "UTC", version: 0, source: "default", audit: [],
+    enabled: false, agent_id: "", agent_name: "", cadence: "daily", timezone: "UTC", version: 0, source: "default", executable: false, audit: [],
   } as KnowledgeGovernanceConfig,
   governanceDetail: null as { run: KnowledgeGovernanceRun; findings: [] } | null,
   registerMutate: vi.fn(),
@@ -209,7 +209,7 @@ beforeEach(() => {
   m.versions = [];
   m.events = [];
   m.governanceRuns = [];
-  m.governanceConfig = { enabled: false, agent_id: "", agent_name: "", cadence: "daily", timezone: "UTC", version: 0, source: "default", audit: [] };
+  m.governanceConfig = { enabled: false, agent_id: "", agent_name: "", cadence: "daily", timezone: "UTC", version: 0, source: "default", executable: false, audit: [] };
   m.governanceDetail = null;
   vi.clearAllMocks();
 });
@@ -239,7 +239,7 @@ describe("KnowledgePageBody", () => {
   it("renders and saves the independent governance configuration", async () => {
     m.role = "owner";
     m.governanceConfig = {
-      enabled: false, agent_id: "agent-1", agent_name: "governance executor", cadence: "weekly", timezone: "Asia/Shanghai", version: 3, source: "explicit", audit: [{ version: 3, actor_id: "owner-1", before_value: {}, after_value: {}, created_at: "2026-11-26T00:00:00Z" }],
+      enabled: false, agent_id: "agent-1", agent_name: "governance executor", cadence: "weekly", timezone: "Asia/Shanghai", version: 3, source: "explicit", executable: true, next_scheduled_at: "2026-12-01T00:00:00Z", audit: [{ version: 3, actor_id: "owner-1", before_value: {}, after_value: {}, created_at: "2026-11-26T00:00:00Z" }],
     };
     mount();
 
