@@ -66,6 +66,7 @@ import { useWorkspaceId } from "@multica/core/hooks";
 import { ContentEditor } from "../../editor";
 import { PromptDiffView } from "../../market/prompt-diff-view";
 import { KnowledgeGovernanceRunDetailSheet } from "./knowledge-governance-run-detail";
+import { KnowledgeGovernanceConfig } from "./knowledge-governance-config";
 import { PickerEmpty, PickerItem, PropertyPicker } from "../../issues/components/pickers/property-picker";
 
 type KnowledgeSegment = "entries" | "archived" | "dirs" | "external" | "governance";
@@ -209,6 +210,7 @@ export function KnowledgePageBody({ wsId }: { wsId: string }) {
 
   return (
     <div className="flex min-w-0 flex-col gap-4 overflow-y-auto">
+      <KnowledgeGovernanceConfig wsId={wsId} />
       <EntitySegToolbar
         segments={segmentRows}
         value={segment}

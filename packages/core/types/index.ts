@@ -72,6 +72,8 @@ export type {
   KnowledgeLifecycleEvent,
   UpdateKnowledgeLifecycleRequest,
   RestoreKnowledgeEntryRequest,
+  KnowledgeGovernanceConfig,
+  KnowledgeGovernanceConfigAudit,
   KnowledgeGovernanceRun,
   KnowledgeGovernanceFinding,
   KnowledgeGovernanceRunDetail,
