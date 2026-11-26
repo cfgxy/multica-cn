@@ -343,9 +343,14 @@ export const TimelineList = forwardRef<TimelineListHandle, Props>(
       blocks.push({
         content: row.entry.content,
         attachments: row.entry.attachments,
+        fallbackAttachments: issueAttachments,
       });
       for (const reply of row.replies) {
-        blocks.push({ content: reply.content, attachments: reply.attachments });
+        blocks.push({
+          content: reply.content,
+          attachments: reply.attachments,
+          fallbackAttachments: issueAttachments,
+        });
       }
     }
     return blocks;

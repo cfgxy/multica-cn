@@ -625,3 +625,64 @@ func TestHTTPErrorTaskScopedFollowsTheRequestNotTheClient(t *testing.T) {
 		}
 	})
 }
+
+func TestUploadFile(t *testing.T) {
+	t.Run("decodes full AttachmentResponse", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.Method != http.MethodPost || r.URL.Path != "/api/upload-file" {
+				t.Fatalf("unexpected request %s %s", r.Method, r.URL.Path)
+			}
+			if got := r.FormValue("issue_id"); got != "issue-1" {
+				t.Fatalf("issue_id = %q, want issue-1", got)
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(AttachmentResponse{
+				ID:          "11111111-1111-4111-8111-111111111111",
+				Filename:    "demo.png",
+				URL:         "/uploads/ws/demo.png",
+				DownloadURL: "/api/attachments/11111111-1111-4111-8111-111111111111/download",
+				MarkdownURL: "https://cdn.example.test/api/attachments/11111111-1111-4111-8111-111111111111/download",
+				ContentType: "image/png",
+			})
+		}))
+		defer srv.Close()
+
+		client := NewAPIClient(srv.URL, "ws-1", "test-token")
+		got, err := client.UploadFile(context.Background(), []byte("png"), "./shots/demo.png", "issue-1")
+		if err != nil {
+			t.Fatalf("UploadFile: %v", err)
+		}
+		if got.ID != "11111111-1111-4111-8111-111111111111" {
+			t.Errorf("ID = %q", got.ID)
+		}
+		if got.Filename != "demo.png" {
+			t.Errorf("Filename = %q", got.Filename)
+		}
+		if got.MarkdownURL != "https://cdn.example.test/api/attachments/11111111-1111-4111-8111-111111111111/download" {
+			t.Errorf("MarkdownURL = %q", got.MarkdownURL)
+		}
+		if got.ContentType != "image/png" {
+			t.Errorf("ContentType = %q", got.ContentType)
+		}
+	})
+
+	t.Run("falls back to filename basename and download path for legacy id-only stub", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{"id": "att-legacy"})
+		}))
+		defer srv.Close()
+
+		client := NewAPIClient(srv.URL, "ws-1", "test-token")
+		got, err := client.UploadFile(context.Background(), []byte("png"), "./dir/shot.png", "")
+		if err != nil {
+			t.Fatalf("UploadFile: %v", err)
+		}
+		if got.Filename != "shot.png" {
+			t.Errorf("Filename = %q, want shot.png", got.Filename)
+		}
+		if got.MarkdownURL != "/api/attachments/att-legacy/download" {
+			t.Errorf("MarkdownURL = %q, want /api/attachments/att-legacy/download", got.MarkdownURL)
+		}
+	})
+}

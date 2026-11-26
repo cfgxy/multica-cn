@@ -1,7 +1,7 @@
 "use client";
 
 import { createContext, use, useMemo, type ReactNode } from "react";
-import type { Attachment } from "@multica/core/types";
+import { isAttachmentProtocolURL, type Attachment } from "@multica/core/types";
 import { matchAttachmentByURL } from "@multica/core/attachments/image-sequence";
 import { openExternal } from "../platform";
 import { useDownloadAttachment } from "./use-download-attachment";
@@ -58,7 +58,7 @@ export function AttachmentDownloadProvider({ attachments, children }: ProviderPr
             download(att.id);
             return;
           }
-          if (url) openExternal(url);
+          if (url && !isAttachmentProtocolURL(url)) openExternal(url);
         },
       };
     },
@@ -87,7 +87,7 @@ export function useAttachmentDownloadResolver(): ResolvedDownload {
     resolveAttachmentId: () => undefined,
     resolveAttachment: () => undefined,
     openByUrl: (url) => {
-      if (url) openExternal(url);
+      if (url && !isAttachmentProtocolURL(url)) openExternal(url);
     },
   };
 }

@@ -44,6 +44,19 @@ describe("preprocessMobileMarkdown — !file file cards", () => {
     expect(out).toBe(`[📎 a.pdf](${REL_URL})`);
   });
 
+  it("accepts attachment:// URLs for !file cards and rejects traversal", () => {
+    expect(preprocessMobileMarkdown("!file[report.pdf](attachment://report.pdf)")).toBe(
+      "[📎 report.pdf](attachment://report.pdf)",
+    );
+    expect(preprocessMobileMarkdown(`!file[report.pdf](attachment://${UUID})`)).toBe(
+      `[📎 report.pdf](attachment://${UUID})`,
+    );
+    const bad = "!file[secret.txt](attachment://../secret.txt)";
+    expect(preprocessMobileMarkdown(bad)).toBe(bad);
+    const empty = "!file[empty.txt](attachment://)";
+    expect(preprocessMobileMarkdown(empty)).toBe(empty);
+  });
+
   it("leaves a disallowed-scheme URL as plain text (no out-of-band navigation)", () => {
     const line = `!file[x.pdf](javascript:alert(1))`;
     expect(preprocessMobileMarkdown(line)).toBe(line);

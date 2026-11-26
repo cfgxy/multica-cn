@@ -2242,13 +2242,18 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
       blocks.push({
         content: item.entry.content,
         attachments: item.entry.attachments,
+        fallbackAttachments: issueAttachments,
       });
       for (const reply of timelineView.threadReplies.get(item.entry.id) ?? []) {
-        blocks.push({ content: reply.content, attachments: reply.attachments });
+        blocks.push({
+          content: reply.content,
+          attachments: reply.attachments,
+          fallbackAttachments: issueAttachments,
+        });
       }
     }
     return collectImageSequence(blocks);
-  }, [issue?.description, descEditorAttachments, items, timelineView.threadReplies]);
+  }, [issue?.description, descEditorAttachments, items, timelineView.threadReplies, issueAttachments]);
 
   const handleDescriptionUpload = useCallback(
     async (file: File) => {
@@ -2924,6 +2929,7 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
             issueId={id}
             issue={issue}
             entry={item.entry}
+            issueAttachments={issueAttachments}
             credentialDelivered={deliveredCredentialRequestIds.has(item.entry.id)}
             credentialRequestAvailable={isCredentialRequestAvailable(issue, credentialActivityTruncated)}
             replies={timelineView.threadReplies.get(item.id) ?? EMPTY_REPLIES}

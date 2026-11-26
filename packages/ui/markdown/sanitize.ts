@@ -24,11 +24,12 @@ export const markdownSanitizeSchema: Options = {
   tagNames: [...(defaultSchema.tagNames ?? []), 'mark'],
   protocols: {
     ...defaultSchema.protocols,
-    href: [...(defaultSchema.protocols?.href ?? []), 'mention', 'slash'],
-    // Permit inline data-URI images (QR codes, charts, base64 screenshots).
+    href: [...(defaultSchema.protocols?.href ?? []), 'mention', 'slash', 'attachment'],
+    // Permit inline data-URI images (QR codes, charts, base64 screenshots) and
+    // internal `attachment://` references resolved by the attachment renderer.
     // The scheme gate only allows `data:` through here; attributes.img below
     // narrows it to image/* so non-image data URIs are still rejected.
-    src: [...(defaultSchema.protocols?.src ?? []), 'data'],
+    src: [...(defaultSchema.protocols?.src ?? []), 'data', 'attachment'],
   },
   attributes: {
     ...defaultSchema.attributes,
@@ -67,6 +68,7 @@ export const markdownSanitizeSchema: Options = {
 export function markdownUrlTransform(url: string): string {
   if (url.startsWith('mention://')) return url
   if (url.startsWith('slash://skill/')) return url
+  if (/^attachment:\/\//i.test(url)) return url
   // defaultUrlTransform strips every data: URL to '', which would blank the src
   // even after rehype-sanitize keeps it. Kept in sync with the image/* narrowing
   // in markdownSanitizeSchema so both gates agree on what a valid inline image is.

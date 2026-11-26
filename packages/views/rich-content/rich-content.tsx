@@ -48,7 +48,7 @@ import {
   type MarkdownRenderer,
 } from "@multica/core/markdown";
 import type { IssueReference } from "@multica/core/markdown";
-import type { Attachment } from "@multica/core/types";
+import { isAttachmentProtocolURL, type Attachment } from "@multica/core/types";
 import {
   isAllowedFileCardHref,
   isIssueIdentifier,
@@ -78,7 +78,10 @@ import {
 } from "../editor/utils/link-handler";
 import { preprocessMarkdown } from "../editor/utils/preprocess";
 import { highlightToHtml } from "../editor/utils/highlight-markdown";
-import { AttachmentDownloadProvider } from "../editor/attachment-download-context";
+import {
+  AttachmentDownloadProvider,
+  useAttachmentDownloadResolver,
+} from "../editor/attachment-download-context";
 import { Attachment as AttachmentRenderer } from "../editor/attachment";
 import { computeClosedFenceOffsets } from "./streaming-fence";
 import { LazyIssueReferenceTail } from "./lazy-issue-reference-tail";
@@ -346,9 +349,28 @@ function RichAnchor({
 function RichLink({ href, children }: { href?: string; children?: ReactNode }) {
   const slug = useWorkspaceSlug();
   const appOrigin = useAppOrigin();
+  const { resolveAttachment, openByUrl } = useAttachmentDownloadResolver();
 
   if (href?.startsWith("slash://skill/")) {
     return <span className="slash-command">{children}</span>;
+  }
+
+  if (href && isAttachmentProtocolURL(href)) {
+    const matched = resolveAttachment(href);
+    if (!matched) {
+      return <span className="text-muted-foreground">{children}</span>;
+    }
+    return (
+      <a
+        href={href}
+        onClick={(e) => {
+          e.preventDefault();
+          openByUrl(href);
+        }}
+      >
+        {children}
+      </a>
+    );
   }
 
   if (isMentionHref(href)) {

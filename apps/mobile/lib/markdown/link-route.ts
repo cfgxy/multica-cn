@@ -10,6 +10,9 @@
  * 决策本身不做副作用，调用方拿到 action 后再决定 router.push / 附件重签 /
  * Linking.openURL——副作用留在 `markdown.tsx`，依赖注入的形态不变。
  */
+import type { Attachment } from "@multica/core/types";
+import { isAttachmentProtocolURL } from "@multica/core/types";
+import { matchAttachmentByURL } from "@multica/core/attachments/image-sequence";
 import { attachmentIdFromUrl } from "@/lib/attachment-open";
 
 export type LinkAction =
@@ -42,9 +45,20 @@ export type LinkAction =
 export function resolveLinkAction(
   url: string,
   wsSlug: string | null,
+  attachments?: ReadonlyArray<Attachment>,
 ): LinkAction {
   // Skill references are prompt hints, not outbound URLs or navigation targets.
   if (url.startsWith("slash://")) return { kind: "noop" };
+  if (isAttachmentProtocolURL(url)) {
+    const matched = matchAttachmentByURL(url, attachments);
+    if (!matched) return { kind: "noop" };
+    return {
+      kind: "attachment",
+      id: matched.id,
+      fallbackUrl:
+        matched.download_url || matched.markdown_url || matched.url || "",
+    };
+  }
   // `mention://` 是内部 scheme——绝不能交给系统。没有 App 注册它，
   // `Linking.openURL("mention://…")` 会弹 iOS 的 "Cannot open URL" 或
   // 静默失败。所有形态在这里穷举，一律不落到 external 分支：
