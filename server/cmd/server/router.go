@@ -2560,6 +2560,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 				r.Get("/entries/{id}/lifecycle", h.GetKnowledgeEntryLifecycle)
 				r.Get("/governance/runs", h.ListKnowledgeGovernanceRuns)
 				r.Get("/governance/runs/{id}", h.GetKnowledgeGovernanceRun)
+				r.Get("/governance/opinions", h.ListKnowledgeGovernanceOpinions)
 				r.Get("/governance/config", h.GetKnowledgeGovernanceConfig)
 			})
 			r.Group(func(r chi.Router) {

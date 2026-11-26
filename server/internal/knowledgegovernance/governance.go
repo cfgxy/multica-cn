@@ -536,9 +536,14 @@ WHERE id = $2 AND workspace_id = $3 AND status = 'running'`, tc, runID, ws); err
 func (r *Runner) entrySnapshot(ctx context.Context, q db.DBTX, workspaceID, dirID pgtype.UUID) ([]EntrySnapshot, error) {
 	rows, err := q.Query(ctx, `
 SELECT id, key, content, content_sha256, current_version, lifecycle_state
-FROM knowledge_entry
-WHERE workspace_id = $1 AND dir_id = $2
-ORDER BY key`, workspaceID, dirID)
+FROM knowledge_entry e
+WHERE e.workspace_id = $1 AND e.dir_id = $2
+  AND NOT EXISTS (
+    SELECT 1 FROM knowledge_governance_opinion o
+    WHERE o.workspace_id = e.workspace_id AND o.entry_id = e.id
+      AND o.status IN ('pending', 'approved', 'applying')
+  )
+ORDER BY e.key`, workspaceID, dirID)
 	if err != nil {
 		return nil, err
 	}
