@@ -30,6 +30,13 @@ func TestPromptQuizAgentScopePersistsExplicitEmptyAndAudit(t *testing.T) {
 	if code, body := put([]string{foreignItemID}); code != http.StatusBadRequest {
 		t.Fatalf("cross-workspace item accepted: %d: %s", code, body)
 	}
+	var rejectedMarkers, rejectedChildren, rejectedAudits int
+	dbfx.QueryRow(t, `SELECT count(*) FROM prompt_quiz_agent_scope WHERE agent_id = $1`, agentID).Scan(&rejectedMarkers)
+	dbfx.QueryRow(t, `SELECT count(*) FROM prompt_quiz_agent_scope_item WHERE agent_id = $1`, agentID).Scan(&rejectedChildren)
+	dbfx.QueryRow(t, `SELECT count(*) FROM prompt_quiz_agent_scope_audit WHERE agent_id = $1`, agentID).Scan(&rejectedAudits)
+	if rejectedMarkers != 0 || rejectedChildren != 0 || rejectedAudits != 0 {
+		t.Fatalf("rejected cross-workspace write left state: markers=%d children=%d audits=%d", rejectedMarkers, rejectedChildren, rejectedAudits)
+	}
 	if code, body := put([]string{itemID}); code != http.StatusOK {
 		t.Fatalf("set scope = %d: %s", code, body)
 	}
