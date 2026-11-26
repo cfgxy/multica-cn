@@ -770,6 +770,12 @@ deleted_retrospective_watermarks AS (
 deleted_retrospective_configs AS (
     DELETE FROM retrospective_config WHERE retrospective_config.workspace_id = $1
 ),
+deleted_knowledge_governance_config_audit AS (
+    DELETE FROM knowledge_governance_config_audit WHERE knowledge_governance_config_audit.workspace_id = $1
+),
+deleted_knowledge_governance_configs AS (
+    DELETE FROM knowledge_governance_config WHERE knowledge_governance_config.workspace_id = $1
+),
 deleted_model_configs AS (
     DELETE FROM self_evolution_model_config WHERE self_evolution_model_config.workspace_id = $1
 ),

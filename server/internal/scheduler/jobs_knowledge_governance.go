@@ -14,14 +14,14 @@ import (
 // evidence-led reviews. Keep it stable once deployed.
 const JobNameKnowledgeGovernance = "knowledge_governance"
 
-// KnowledgeGovernanceJob reviews each live mirrored knowledge directory daily.
-// It reuses the platform scheduler's durable leases and retry records; the
-// agent work itself remains a normal asynchronous task owned by its run row.
+// KnowledgeGovernanceJob evaluates due workspace-local schedule windows every
+// hour. Runner.ListScheduleTargets enforces each persisted daily/weekly/monthly
+// bucket, keeping the scheduler lease durable without coupling to retrospective.
 func KnowledgeGovernanceJob(runner *knowledgegovernance.Runner) JobSpec {
 	return JobSpec{
 		Name:              JobNameKnowledgeGovernance,
-		Cadence:           24 * time.Hour,
-		ScheduleDelay:     30 * time.Minute,
+		Cadence:           time.Hour,
+		ScheduleDelay:     5 * time.Minute,
 		CatchUpMode:       CatchUpLatestOnly,
 		CatchUpWindow:     7 * 24 * time.Hour,
 		RunTimeout:        30 * time.Minute,
@@ -51,21 +51,35 @@ func makeKnowledgeGovernanceHandler(runner *knowledgegovernance.Runner) Handler 
 		}
 
 		result := make(map[string]any, len(targets))
+		completedWorkspaces := make(map[string]knowledgegovernance.ScheduleTarget)
+		blockedWorkspaces := make(map[string]bool)
 		var rows int64
 		for _, target := range targets {
 			stats, err := runner.RunWorkspace(ctx, target.WorkspaceID, target.DirID, target.ActorID, "schedule")
 			switch {
 			case errors.Is(err, knowledgegovernance.ErrNoExecutor):
+				blockedWorkspaces[target.WorkspaceID] = true
 				result[target.DirID] = map[string]any{"status": "skipped", "reason": "agent_not_configured"}
 			case errors.Is(err, knowledgegovernance.ErrScopeRunning):
+				blockedWorkspaces[target.WorkspaceID] = true
 				result[target.DirID] = map[string]any{"status": "skipped", "reason": "scope_running"}
 			case err != nil:
+				blockedWorkspaces[target.WorkspaceID] = true
 				slog.Warn("knowledge governance workspace pass failed",
 					"workspace_id", target.WorkspaceID, "directory_id", target.DirID, "error", err)
 				result[target.DirID] = map[string]any{"status": "failed", "error": err.Error()}
 			default:
 				rows++
+				completedWorkspaces[target.WorkspaceID] = target
 				result[target.DirID] = stats
+			}
+		}
+		for workspaceID, target := range completedWorkspaces {
+			if blockedWorkspaces[workspaceID] {
+				continue
+			}
+			if err := runner.MarkScheduleBucket(ctx, workspaceID, target.Cadence, target.Timezone); err != nil {
+				slog.Warn("knowledge governance schedule bucket update failed", "workspace_id", workspaceID, "error", err)
 			}
 		}
 		return HandlerResult{RowsAffected: rows, Result: result}, nil

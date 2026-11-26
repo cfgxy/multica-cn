@@ -15,6 +15,7 @@ export const knowledgeKeys = {
   versions: (wsId: string, entryId: string) => [...knowledgeKeys.all(wsId), "versions", entryId] as const,
   lifecycle: (wsId: string, entryId: string) => [...knowledgeKeys.all(wsId), "lifecycle", entryId] as const,
   governanceRuns: (wsId: string, dirId?: string) => [...knowledgeKeys.all(wsId), "governance-runs", dirId ?? ""] as const,
+  governanceConfig: (wsId: string) => [...knowledgeKeys.all(wsId), "governance-config"] as const,
   governanceRun: (wsId: string, runId: string) => [...knowledgeKeys.all(wsId), "governance-run", runId] as const,
 };
 
@@ -54,6 +55,22 @@ export function knowledgeEntryLifecycleOptions(wsId: string, entryId: string) {
 		queryFn: () => api.listKnowledgeEntryLifecycle(entryId),
 		enabled: !!wsId && !!entryId,
 	});
+}
+
+export function knowledgeGovernanceConfigOptions(wsId: string) {
+  return queryOptions({
+    queryKey: knowledgeKeys.governanceConfig(wsId),
+    queryFn: () => api.getKnowledgeGovernanceConfig(),
+    enabled: !!wsId,
+  });
+}
+
+export function useUpdateKnowledgeGovernanceConfig(wsId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (patch: Parameters<typeof api.updateKnowledgeGovernanceConfig>[0]) => api.updateKnowledgeGovernanceConfig(patch),
+    onSuccess: () => qc.invalidateQueries({ queryKey: knowledgeKeys.all(wsId) }),
+  });
 }
 
 export function knowledgeGovernanceRunsOptions(wsId: string, dirId?: string) {

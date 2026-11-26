@@ -1400,6 +1400,27 @@ export interface RestoreKnowledgeEntryRequest {
   writeback?: boolean;
 }
 
+/** Persisted, independent controls for the knowledge-governance scheduler. */
+export interface KnowledgeGovernanceConfigAudit {
+  version: number;
+  actor_id: string;
+  before_value: Record<string, unknown>;
+  after_value: Record<string, unknown>;
+  created_at: string;
+}
+
+export interface KnowledgeGovernanceConfig {
+  enabled: boolean;
+  agent_id: string;
+  agent_name: string;
+  cadence: "daily" | "weekly" | "monthly";
+  timezone: string;
+  version: number;
+  source: "default" | "explicit";
+  updated_at?: string;
+  audit: KnowledgeGovernanceConfigAudit[];
+}
+
 /** One asynchronous, advisory review of a mirrored knowledge directory. */
 export interface KnowledgeGovernanceRun {
   id: string;

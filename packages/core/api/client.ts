@@ -163,6 +163,7 @@ import type {
   KnowledgeLifecycleEvent,
   UpdateKnowledgeLifecycleRequest,
   RestoreKnowledgeEntryRequest,
+  KnowledgeGovernanceConfig,
   KnowledgeGovernanceRun,
   KnowledgeGovernanceRunDetail,
   KnowledgeGovernanceRunStart,
@@ -649,6 +650,7 @@ import {
   KnowledgeDirManagedSchema,
   KnowledgeLifecycleUpdateSchema,
   KnowledgeEntryRestoreSchema,
+  KnowledgeGovernanceConfigSchema,
   KnowledgeGovernanceRunListResponseSchema,
   KnowledgeGovernanceRunDetailSchema,
   KnowledgeGovernanceRunStartSchema,
@@ -5939,6 +5941,23 @@ export class ApiClient {
     return parseWithFallback(raw, KnowledgeEntryRestoreSchema, { status: "", version: 0 }, {
       endpoint: "POST /api/knowledge/entries/{id}/restore",
     });
+  }
+
+  async getKnowledgeGovernanceConfig(): Promise<KnowledgeGovernanceConfig> {
+    const raw = await this.fetch<unknown>("/api/knowledge/governance/config");
+    return parseWithFallback(raw, KnowledgeGovernanceConfigSchema, {
+      enabled: false, agent_id: "", agent_name: "", cadence: "daily", timezone: "UTC", version: 0, source: "default", audit: [],
+    }, { endpoint: "GET /api/knowledge/governance/config" });
+  }
+
+  async updateKnowledgeGovernanceConfig(patch: Partial<KnowledgeGovernanceConfig>): Promise<KnowledgeGovernanceConfig> {
+    const raw = await this.fetch<unknown>("/api/knowledge/governance/config", {
+      method: "PUT",
+      body: JSON.stringify(patch),
+    });
+    return parseWithFallback(raw, KnowledgeGovernanceConfigSchema, {
+      enabled: false, agent_id: "", agent_name: "", cadence: "daily", timezone: "UTC", version: 0, source: "default", audit: [],
+    }, { endpoint: "PUT /api/knowledge/governance/config" });
   }
 
   async listKnowledgeGovernanceRuns(dirId?: string): Promise<KnowledgeGovernanceRun[]> {

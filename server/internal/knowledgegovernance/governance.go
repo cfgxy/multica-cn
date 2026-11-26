@@ -171,21 +171,52 @@ type RunStats struct {
 	Status string `json:"status"`
 }
 
-// ScheduleTarget identifies one directory and the stable workspace manager
-// whose identity makes the system-initiated task accountable and auditable.
+// ScheduleTarget identifies one directory, its configured execution agent, and
+// the stable workspace manager whose identity remains accountable for a
+// system-initiated task.
 type ScheduleTarget struct {
 	WorkspaceID string
 	DirID       string
 	ActorID     string
+	Cadence     string
+	Timezone    string
 }
 
-// ListScheduleTargets returns live mirrored directories with at least one
-// entry. Directories without a current owner or admin are excluded by the SQL
-// join because their system tasks would have no accountable user.
+// scheduleBucket is the durable, local-time execution window. ISO weeks start
+// on Monday; month buckets naturally choose the first local calendar day. A
+// persisted bucket means restarts and repeated scheduler leases never replay a
+// completed window.
+func scheduleBucket(now time.Time, cadence, timezone string) (string, error) {
+	loc, err := time.LoadLocation(timezone)
+	if err != nil {
+		return "", fmt.Errorf("invalid timezone %q: %w", timezone, err)
+	}
+	local := now.In(loc)
+	switch cadence {
+	case "daily":
+		return local.Format("2006-01-02"), nil
+	case "weekly":
+		year, week := local.ISOWeek()
+		return fmt.Sprintf("%04d-W%02d", year, week), nil
+	case "monthly":
+		return local.Format("2006-01"), nil
+	default:
+		return "", fmt.Errorf("invalid cadence %q", cadence)
+	}
+}
+
+// ListScheduleTargets returns only due, enabled configuration rows. The
+// scheduler claims a bucket only after processing every directory in the
+// workspace, so a workspace with multiple directories is not partially
+// skipped by the first successful directory.
 func (r *Runner) ListScheduleTargets(ctx context.Context) ([]ScheduleTarget, error) {
 	rows, err := r.DB.Query(ctx, `
-SELECT d.workspace_id, d.id AS dir_id, manager.user_id AS actor_id
+SELECT d.workspace_id, d.id AS dir_id, manager.user_id AS actor_id, c.cadence, c.timezone, c.last_scheduled_bucket
 FROM knowledge_dir d
+JOIN knowledge_governance_config c
+  ON c.workspace_id = d.workspace_id AND c.enabled = TRUE
+JOIN agent a ON a.id = c.agent_id
+  AND a.workspace_id = d.workspace_id AND a.archived_at IS NULL AND a.runtime_id IS NOT NULL
 JOIN LATERAL (
     SELECT user_id
     FROM member
@@ -201,21 +232,52 @@ ORDER BY d.workspace_id ASC, d.created_at ASC, d.id ASC`)
 	}
 	defer rows.Close()
 	targets := []ScheduleTarget{}
+	now := r.now()
 	for rows.Next() {
 		var workspaceID, dirID, actorID pgtype.UUID
-		if err := rows.Scan(&workspaceID, &dirID, &actorID); err != nil {
+		var target ScheduleTarget
+		var lastBucket string
+		if err := rows.Scan(&workspaceID, &dirID, &actorID, &target.Cadence, &target.Timezone, &lastBucket); err != nil {
 			return nil, fmt.Errorf("knowledge governance: scan schedule target: %w", err)
 		}
-		targets = append(targets, ScheduleTarget{
-			WorkspaceID: util.UUIDToString(workspaceID),
-			DirID:       util.UUIDToString(dirID),
-			ActorID:     util.UUIDToString(actorID),
-		})
+		bucket, bucketErr := scheduleBucket(now, target.Cadence, target.Timezone)
+		if bucketErr != nil {
+			return nil, fmt.Errorf("knowledge governance: schedule target: %w", bucketErr)
+		}
+		if lastBucket == bucket {
+			continue
+		}
+		target.WorkspaceID = util.UUIDToString(workspaceID)
+		target.DirID = util.UUIDToString(dirID)
+		target.ActorID = util.UUIDToString(actorID)
+		targets = append(targets, target)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("knowledge governance: iterate schedule targets: %w", err)
 	}
 	return targets, nil
+}
+
+// MarkScheduleBucket records a completed workspace schedule window. It is
+// deliberately conditional so a stale scheduler cannot move the marker
+// backwards after a newer lease has completed.
+func (r *Runner) MarkScheduleBucket(ctx context.Context, workspaceID, cadence, timezone string) error {
+	workspace, err := util.ParseUUID(workspaceID)
+	if err != nil {
+		return fmt.Errorf("knowledge governance: invalid workspace id: %w", err)
+	}
+	bucket, err := scheduleBucket(r.now(), cadence, timezone)
+	if err != nil {
+		return fmt.Errorf("knowledge governance: schedule bucket: %w", err)
+	}
+	_, err = r.DB.Exec(ctx, `
+UPDATE knowledge_governance_config
+SET last_scheduled_bucket = $2
+WHERE workspace_id = $1 AND last_scheduled_bucket < $2`, workspace, bucket)
+	if err != nil {
+		return fmt.Errorf("knowledge governance: mark schedule bucket: %w", err)
+	}
+	return nil
 }
 
 // ReconcileStaleRuns is the scheduler backstop for runs whose task reached a
@@ -342,7 +404,7 @@ WHERE id = $1 AND workspace_id = $2 AND removed = FALSE`, dir, ws).Scan(&scope);
 	var agentID, runtimeID pgtype.UUID
 	err = tx.QueryRow(runCtx, `
 SELECT a.id, a.runtime_id
-FROM retrospective_config c
+FROM knowledge_governance_config c
 JOIN agent a ON a.id = c.agent_id
 WHERE c.workspace_id = $1 AND c.enabled = TRUE
   AND a.workspace_id = $1 AND a.archived_at IS NULL AND a.runtime_id IS NOT NULL`, ws).Scan(&agentID, &runtimeID)
