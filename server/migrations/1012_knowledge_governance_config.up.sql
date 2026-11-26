@@ -7,7 +7,6 @@ CREATE TABLE knowledge_governance_config (
     agent_id UUID,
     cadence TEXT NOT NULL DEFAULT 'daily' CHECK (cadence IN ('daily', 'weekly', 'monthly')),
     timezone TEXT NOT NULL DEFAULT 'UTC',
-    last_scheduled_bucket TEXT NOT NULL DEFAULT '',
     version INTEGER NOT NULL DEFAULT 1,
     updated_by UUID,
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now()

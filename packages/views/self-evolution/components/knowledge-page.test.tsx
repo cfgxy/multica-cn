@@ -5,7 +5,7 @@ import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { I18nProvider } from "@multica/core/i18n/react";
-import type { KnowledgeDir, KnowledgeEntry, KnowledgeEntryVersion, KnowledgeGovernanceRun, KnowledgeLifecycleEvent } from "@multica/core/types";
+import type { KnowledgeDir, KnowledgeEntry, KnowledgeEntryVersion, KnowledgeGovernanceConfig, KnowledgeGovernanceRun, KnowledgeLifecycleEvent } from "@multica/core/types";
 import enCommon from "../../locales/en/common.json";
 import enSelfEvolution from "../../locales/en/self-evolution.json";
 import { KnowledgePageBody } from "./knowledge-page";
@@ -28,6 +28,9 @@ const m = vi.hoisted(() => ({
   versions: [] as KnowledgeEntryVersion[],
   events: [] as KnowledgeLifecycleEvent[],
   governanceRuns: [] as KnowledgeGovernanceRun[],
+  governanceConfig: {
+    enabled: false, agent_id: "", agent_name: "", cadence: "daily", timezone: "UTC", version: 0, source: "default", audit: [],
+  } as KnowledgeGovernanceConfig,
   governanceDetail: null as { run: KnowledgeGovernanceRun; findings: [] } | null,
   registerMutate: vi.fn(),
   scanMutate: vi.fn(),
@@ -42,6 +45,7 @@ const m = vi.hoisted(() => ({
   startGovernanceMutate: vi.fn(),
   cancelGovernanceMutate: vi.fn(),
   retryGovernanceMutate: vi.fn(),
+  updateGovernanceConfigMutate: vi.fn(),
 }));
 
 vi.mock("../../editor", () => ({
@@ -91,6 +95,10 @@ vi.mock("@multica/core/self-evolution", async () => {
       queryFn: () => Promise.resolve(m.events),
       enabled: Boolean(entryId),
     }),
+    knowledgeGovernanceConfigOptions: (wsId: string) => ({
+      queryKey: ["knowledge-governance-config", wsId],
+      queryFn: () => Promise.resolve(m.governanceConfig),
+    }),
     knowledgeGovernanceRunsOptions: (wsId: string) => ({
       queryKey: ["knowledge-governance-runs", wsId],
       queryFn: () => Promise.resolve(m.governanceRuns),
@@ -110,6 +118,7 @@ vi.mock("@multica/core/self-evolution", async () => {
     useSetKnowledgeDirManaged: () => ({ mutate: m.setManagedMutate, isPending: false }),
     useUpdateKnowledgeEntryLifecycle: () => ({ mutate: m.updateLifecycleMutate, isPending: false }),
     useRestoreKnowledgeEntry: () => ({ mutate: m.restoreMutate, isPending: false }),
+    useUpdateKnowledgeGovernanceConfig: () => ({ mutate: m.updateGovernanceConfigMutate, isPending: false }),
     useStartKnowledgeGovernanceRun: () => ({ mutate: m.startGovernanceMutate, isPending: false }),
     useCancelKnowledgeGovernanceRun: () => ({ mutate: m.cancelGovernanceMutate, isPending: false }),
     useRetryKnowledgeGovernanceRun: () => ({ mutate: m.retryGovernanceMutate, isPending: false }),
@@ -200,6 +209,7 @@ beforeEach(() => {
   m.versions = [];
   m.events = [];
   m.governanceRuns = [];
+  m.governanceConfig = { enabled: false, agent_id: "", agent_name: "", cadence: "daily", timezone: "UTC", version: 0, source: "default", audit: [] };
   m.governanceDetail = null;
   vi.clearAllMocks();
 });
@@ -224,6 +234,22 @@ describe("KnowledgePageBody", () => {
         "Registering, scanning, unregistering and adopting are workspace-owner only.",
       ),
     ).toBeTruthy();
+  });
+
+  it("renders and saves the independent governance configuration", async () => {
+    m.role = "owner";
+    m.governanceConfig = {
+      enabled: false, agent_id: "agent-1", agent_name: "governance executor", cadence: "weekly", timezone: "Asia/Shanghai", version: 3, source: "explicit", audit: [{ version: 3, actor_id: "owner-1", before_value: {}, after_value: {}, created_at: "2026-11-26T00:00:00Z" }],
+    };
+    mount();
+
+    await waitFor(() => expect(screen.getByTestId("knowledge-governance-config-source")).toHaveTextContent("版本：3"));
+    await userEvent.click(screen.getByRole("checkbox", { name: "启用" }));
+    await userEvent.click(screen.getByRole("button", { name: "保存" }));
+    expect(m.updateGovernanceConfigMutate).toHaveBeenCalledWith(
+      { enabled: true, agent_id: "agent-1", cadence: "weekly", timezone: "Asia/Shanghai" },
+      expect.anything(),
+    );
   });
 
   it("keeps directories and external sources off the first screen (walk #18)", async () => {

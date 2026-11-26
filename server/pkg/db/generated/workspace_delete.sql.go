@@ -778,6 +778,9 @@ deleted_retrospective_configs AS (
 deleted_knowledge_governance_config_audit AS (
     DELETE FROM knowledge_governance_config_audit WHERE knowledge_governance_config_audit.workspace_id = $1
 ),
+deleted_knowledge_governance_schedule_claims AS (
+    DELETE FROM knowledge_governance_schedule_claim WHERE knowledge_governance_schedule_claim.workspace_id = $1
+),
 deleted_knowledge_governance_configs AS (
     DELETE FROM knowledge_governance_config WHERE knowledge_governance_config.workspace_id = $1
 ),
