@@ -68,13 +68,19 @@ WHERE id = sqlc.arg('id')::uuid
 RETURNING *;
 
 -- name: DeletePromptQuizItem :execrows
-WITH deleted_scope_items AS (
+WITH target AS MATERIALIZED (
+    SELECT id
+    FROM prompt_quiz_item
+    WHERE id = sqlc.arg('id')::uuid
+      AND workspace_id = sqlc.arg('workspace_id')::uuid
+    FOR UPDATE
+),
+deleted_scope_items AS (
     DELETE FROM prompt_quiz_agent_scope_item
-    WHERE item_id = sqlc.arg('id')::uuid
+    WHERE item_id IN (SELECT id FROM target)
 )
 DELETE FROM prompt_quiz_item
-WHERE id = sqlc.arg('id')::uuid
-  AND workspace_id = sqlc.arg('workspace_id')::uuid;
+WHERE id IN (SELECT id FROM target);
 
 -- name: GetPromptQuizItem :one
 SELECT *

@@ -330,13 +330,19 @@ func (q *Queries) CreatePromptQuizTask(ctx context.Context, arg CreatePromptQuiz
 }
 
 const deletePromptQuizItem = `-- name: DeletePromptQuizItem :execrows
-WITH deleted_scope_items AS (
+WITH target AS MATERIALIZED (
+    SELECT id
+    FROM prompt_quiz_item
+    WHERE id = $1::uuid
+      AND workspace_id = $2::uuid
+    FOR UPDATE
+),
+deleted_scope_items AS (
     DELETE FROM prompt_quiz_agent_scope_item
-    WHERE item_id = $1::uuid
+    WHERE item_id IN (SELECT id FROM target)
 )
 DELETE FROM prompt_quiz_item
-WHERE id = $1::uuid
-  AND workspace_id = $2::uuid
+WHERE id IN (SELECT id FROM target)
 `
 
 type DeletePromptQuizItemParams struct {
