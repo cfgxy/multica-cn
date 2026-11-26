@@ -89,6 +89,7 @@ func registerKnowledgeDir(t *testing.T, kind, path string) string {
 	t.Cleanup(func() {
 		ctx := context.Background()
 		testPool.Exec(ctx, `DELETE FROM agent_task_queue WHERE id IN (SELECT task_id FROM knowledge_governance_run WHERE dir_id = ANY($1::uuid[]))`, ids)
+		testPool.Exec(ctx, `DELETE FROM knowledge_governance_opinion WHERE dir_id = ANY($1::uuid[])`, ids)
 		testPool.Exec(ctx, `DELETE FROM knowledge_governance_finding WHERE run_id IN (SELECT id FROM knowledge_governance_run WHERE dir_id = ANY($1::uuid[]))`, ids)
 		testPool.Exec(ctx, `DELETE FROM knowledge_governance_run WHERE dir_id = ANY($1::uuid[])`, ids)
 		testPool.Exec(ctx, `DELETE FROM knowledge_lifecycle_event WHERE entry_id IN (SELECT id FROM knowledge_entry WHERE dir_id = ANY($1::uuid[]))`, ids)
@@ -229,6 +230,7 @@ func TestKnowledgeGovernanceRunWaitsForWorkspaceDeleteFence(t *testing.T) {
 		"agent_id":     agentID,
 		"cadence":      "daily",
 		"timezone":     "UTC",
+		"next_eligible_at": time.Now().UTC(),
 	}, "workspace_id = $1", testWorkspaceID)
 
 	runner := &knowledgegovernance.Runner{
@@ -317,7 +319,7 @@ func TestKnowledgeGovernancePersistReportFailureFinishesRun(t *testing.T) {
 		WHERE workspace_id = $1`, testWorkspaceID).Scan(&previousAgentID, &previousEnabled)
 	if errors.Is(err, pgx.ErrNoRows) {
 		dbfx.InsertNoID(t, "knowledge_governance_config", testutil.Cols{
-			"workspace_id": testWorkspaceID, "enabled": true, "agent_id": agentID, "cadence": "daily", "timezone": "UTC",
+			"workspace_id": testWorkspaceID, "enabled": true, "agent_id": agentID, "cadence": "daily", "timezone": "UTC", "next_eligible_at": time.Now().UTC(),
 		}, "workspace_id = $1", testWorkspaceID)
 	} else if err != nil {
 		t.Fatalf("read governance execution config: %v", err)
