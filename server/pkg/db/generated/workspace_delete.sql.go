@@ -805,6 +805,9 @@ deleted_jev_configs AS (
 deleted_knowledge_operations AS (
     DELETE FROM knowledge_entry_operation WHERE knowledge_entry_operation.workspace_id = $1
 ),
+deleted_knowledge_governance_opinions AS (
+    DELETE FROM knowledge_governance_opinion WHERE knowledge_governance_opinion.workspace_id = $1
+),
 deleted_knowledge_governance_findings AS (
     DELETE FROM knowledge_governance_finding WHERE knowledge_governance_finding.workspace_id = $1
 ),

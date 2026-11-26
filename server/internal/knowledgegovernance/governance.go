@@ -84,7 +84,7 @@ func PromptFromContext(raw []byte) (string, bool) {
 Output contract:
 {
   "findings":[{
-    "entry_id":"UUID","key":"exact key","original_content":"exact content","content_version":1,"content_sha256":"exact SHA","scope":"scope","verdict":"valid|revised|deprecated|superseded|duplicate|invalid|needs_review","problem_categories":["obsolete_operation"],"counter_evidence":[{"source_type":"owner_correction|issue|pull_request|code|runtime_record","immutable_ref":"immutable URL, SHA, or identifier","observed_at":"RFC3339","excerpt":"relevant evidence excerpt"}],"applicable_scope":"where this conclusion applies","replacement_entry_id":"UUID or empty","recommendation":"specific non-binding next step","writeback_authorized":false,"lifecycle_event_ref":"existing lifecycle event id or empty"
+    "entry_id":"UUID","key":"exact key","original_content":"exact content","content_version":1,"content_sha256":"exact SHA","scope":"scope","verdict":"valid|revised|deprecated|superseded|duplicate|invalid|needs_review","problem_categories":["obsolete_operation"],"counter_evidence":[{"source_type":"owner_correction|issue|pull_request|code|runtime_record","immutable_ref":"immutable URL, SHA, or identifier","observed_at":"RFC3339","excerpt":"relevant evidence excerpt"}],"applicable_scope":"where this conclusion applies","replacement_entry_id":"UUID or empty","recommendation":"specific non-binding next step","proposed_content":"complete replacement content for revised; empty for non-revised","writeback_authorized":false,"lifecycle_event_ref":"existing lifecycle event id or empty"
   }],
   "retained_coverage":[{"entry_id":"UUID of every valid entry","coverage_evidence":{"source_type":"code","immutable_ref":"...","observed_at":"RFC3339","excerpt":"why this remains covered"},"sampled_counterevidence":{"source_type":"issue","immutable_ref":"...","observed_at":"RFC3339","excerpt":"a sampled attempt to refute it"}}],
   "retrieval_regressions":[{"entry_id":"UUID","expected":"expected recall outcome","observed":"actual result when tested","passed":false,"not_run_reason":"required when no authorized writeback occurred"}],
@@ -114,6 +114,7 @@ type Finding struct {
 	ApplicableScope     string     `json:"applicable_scope"`
 	ReplacementEntryID  string     `json:"replacement_entry_id"`
 	Recommendation      string     `json:"recommendation"`
+	ProposedContent     string     `json:"proposed_content"`
 	WritebackAuthorized bool       `json:"writeback_authorized"`
 	LifecycleEventRef   string     `json:"lifecycle_event_ref"`
 }
@@ -639,6 +640,12 @@ func ParseRunOutput(raw string, tc TaskContext) (RunOutput, error) {
 				return RunOutput{}, fmt.Errorf("knowledge governance: finding %s evidence: %w", finding.EntryID, err)
 			}
 		}
+		if finding.Verdict == "revised" && strings.TrimSpace(finding.ProposedContent) == "" {
+			return RunOutput{}, errors.New("knowledge governance: revised finding must include proposed_content")
+		}
+		if finding.Verdict != "revised" && strings.TrimSpace(finding.ProposedContent) != "" {
+			return RunOutput{}, errors.New("knowledge governance: only revised findings may include proposed_content")
+		}
 		if finding.Verdict == "valid" {
 			valid[finding.EntryID] = true
 		}
@@ -719,16 +726,33 @@ func (r *Runner) persistReport(ctx context.Context, runID, workspaceID pgtype.UU
 			}
 			replacement = parsed
 		}
-		if _, err := tx.Exec(ctx, `
+		var findingID pgtype.UUID
+		if err := tx.QueryRow(ctx, `
 INSERT INTO knowledge_governance_finding (
  run_id, workspace_id, entry_id, entry_key, original_content, content_version, content_sha256, scope,
  verdict, problem_categories, counter_evidence, applicable_scope, replacement_entry_id, recommendation,
  writeback_authorized, lifecycle_event_ref
-) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb,$11::jsonb,$12,$13,$14,FALSE,$15)`,
+) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb,$11::jsonb,$12,$13,$14,FALSE,$15)
+RETURNING id`,
 			runID, workspaceID, util.MustParseUUID(finding.EntryID), finding.Key, finding.OriginalContent,
 			finding.ContentVersion, finding.ContentSHA256, finding.Scope, finding.Verdict, categories, evidence,
-			finding.ApplicableScope, replacement, finding.Recommendation, finding.LifecycleEventRef); err != nil {
+			finding.ApplicableScope, replacement, finding.Recommendation, finding.LifecycleEventRef).Scan(&findingID); err != nil {
 			return false, err
+		}
+		if finding.Verdict == "revised" || finding.Verdict == "deprecated" {
+			action := "delete"
+			if finding.Verdict == "revised" {
+				action = "revise"
+			}
+			_, err := tx.Exec(ctx, `
+INSERT INTO knowledge_governance_opinion (
+ workspace_id, dir_id, entry_id, run_id, finding_id, action, proposed_content, target_version, target_content_sha256
+) SELECT $1, dir_id, $2, $3, $4, $5, $6, $7, $8 FROM knowledge_entry WHERE id = $2 AND workspace_id = $1
+ON CONFLICT (workspace_id, entry_id) WHERE status IN ('pending', 'approved', 'applying') DO NOTHING`,
+				workspaceID, util.MustParseUUID(finding.EntryID), runID, findingID, action, finding.ProposedContent, finding.ContentVersion, finding.ContentSHA256)
+			if err != nil {
+				return false, err
+			}
 		}
 	}
 	payload := map[string]any{
