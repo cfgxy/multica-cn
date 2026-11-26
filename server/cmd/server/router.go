@@ -2566,6 +2566,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 			r.Group(func(r chi.Router) {
 				r.Use(middleware.RequireWorkspaceRole(queries, "owner", "admin"))
 				r.Put("/governance/config", h.UpdateKnowledgeGovernanceConfig)
+				r.Post("/governance/opinions/{id}/{decision:approve|reject}", h.DecideKnowledgeGovernanceOpinion)
 			})
 			r.Group(func(r chi.Router) {
 				r.Use(middleware.RequireWorkspaceRole(queries, "owner"))
