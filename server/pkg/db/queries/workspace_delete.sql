@@ -514,6 +514,18 @@ deleted_prompt_perplexity_scores AS (
 -- prompt_quiz_sweep_state is deliberately NOT here: it is the scheduler's
 -- single-row cursor, has no workspace_id, and belongs to the deployment rather
 -- than to any workspace.
+-- Quiz range controls have no foreign keys by repository policy. Delete child
+-- rows, marker and audit explicitly before the workspace's agents/items.
+deleted_prompt_quiz_scope_items AS (
+    DELETE FROM prompt_quiz_agent_scope_item
+    WHERE agent_id IN (SELECT id FROM agent WHERE workspace_id = $1)
+),
+deleted_prompt_quiz_scope_audit AS (
+    DELETE FROM prompt_quiz_agent_scope_audit WHERE workspace_id = $1
+),
+deleted_prompt_quiz_scopes AS (
+    DELETE FROM prompt_quiz_agent_scope WHERE workspace_id = $1
+),
 deleted_prompt_quiz_results AS (
     DELETE FROM prompt_quiz_result WHERE workspace_id = $1
 ),

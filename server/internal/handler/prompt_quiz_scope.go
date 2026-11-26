@@ -115,6 +115,26 @@ func (h *Handler) PutPromptQuizAgentScope(w http.ResponseWriter, r *http.Request
 			return
 		}
 	}
+	beforeIDs := []string{}
+	beforeRows, queryErr := tx.Query(r.Context(), `SELECT item_id FROM prompt_quiz_agent_scope_item WHERE agent_id = $1 ORDER BY item_id`, agentID)
+	if queryErr != nil {
+		writeError(w, http.StatusInternalServerError, "failed to read quiz item range")
+		return
+	}
+	for beforeRows.Next() {
+		var id pgtype.UUID
+		if queryErr = beforeRows.Scan(&id); queryErr != nil {
+			break
+		}
+		beforeIDs = append(beforeIDs, uuidToString(id))
+	}
+	beforeRows.Close()
+	if queryErr != nil {
+		writeError(w, http.StatusInternalServerError, "failed to read quiz item range")
+		return
+	}
+	beforeJSON, _ := json.Marshal(beforeIDs)
+	afterJSON, _ := json.Marshal(req.ItemIDs)
 	if _, err = tx.Exec(r.Context(), `INSERT INTO prompt_quiz_agent_scope(agent_id, workspace_id, configured_by) VALUES ($1, $2, $3) ON CONFLICT(agent_id) DO UPDATE SET workspace_id = EXCLUDED.workspace_id, configured_by = EXCLUDED.configured_by, configured_at = now()`, agentID, workspaceID, requestUserID(r)); err == nil {
 		_, err = tx.Exec(r.Context(), `DELETE FROM prompt_quiz_agent_scope_item WHERE agent_id = $1`, agentID)
 	}
@@ -124,6 +144,9 @@ func (h *Handler) PutPromptQuizAgentScope(w http.ResponseWriter, r *http.Request
 				break
 			}
 		}
+	}
+	if err == nil {
+		_, err = tx.Exec(r.Context(), `INSERT INTO prompt_quiz_agent_scope_audit(workspace_id, agent_id, actor_id, before_item_ids, after_item_ids) VALUES ($1, $2, $3, $4::jsonb, $5::jsonb)`, workspaceID, agentID, requestUserID(r), beforeJSON, afterJSON)
 	}
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to save quiz item range")
