@@ -57,6 +57,118 @@ type KnowledgeGovernanceFindingResponse struct {
 	CreatedAt           string          `json:"created_at"`
 }
 
+type KnowledgeGovernanceOpinionResponse struct {
+	ID                  string `json:"id"`
+	DirID               string `json:"dir_id"`
+	EntryID             string `json:"entry_id"`
+	RunID               string `json:"run_id"`
+	FindingID           string `json:"finding_id"`
+	Action              string `json:"action"`
+	ProposedContent     string `json:"proposed_content"`
+	TargetVersion       int32  `json:"target_version"`
+	TargetContentSHA256 string `json:"target_content_sha256"`
+	Status              string `json:"status"`
+	CreatedAt           string `json:"created_at"`
+}
+
+func (h *Handler) ListKnowledgeGovernanceOpinions(w http.ResponseWriter, r *http.Request) {
+	workspaceID, ok := parseUUIDOrBadRequest(w, h.resolveWorkspaceID(r), "workspace id")
+	if !ok {
+		return
+	}
+	rows, err := h.DB.Query(r.Context(), `SELECT id, dir_id, entry_id, run_id, finding_id, action, proposed_content, target_version, target_content_sha256, status, created_at
+FROM knowledge_governance_opinion WHERE workspace_id = $1 ORDER BY created_at DESC LIMIT 100`, workspaceID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to list governance opinions")
+		return
+	}
+	defer rows.Close()
+	out := make([]KnowledgeGovernanceOpinionResponse, 0)
+	for rows.Next() {
+		var item KnowledgeGovernanceOpinionResponse
+		var id, dirID, entryID, runID, findingID pgtype.UUID
+		var created pgtype.Timestamptz
+		if err := rows.Scan(&id, &dirID, &entryID, &runID, &findingID, &item.Action, &item.ProposedContent, &item.TargetVersion, &item.TargetContentSHA256, &item.Status, &created); err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to read governance opinion")
+			return
+		}
+		item.ID, item.DirID, item.EntryID, item.RunID, item.FindingID = uuidToString(id), uuidToString(dirID), uuidToString(entryID), uuidToString(runID), uuidToString(findingID)
+		item.CreatedAt = created.Time.UTC().Format(httpTimeFormat)
+		out = append(out, item)
+	}
+	if err := rows.Err(); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to list governance opinions")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"opinions": out})
+}
+
+func (h *Handler) DecideKnowledgeGovernanceOpinion(w http.ResponseWriter, r *http.Request) {
+	actorID, ok := requireUserID(w, r)
+	if !ok {
+		return
+	}
+	workspaceID := parseUUID(h.resolveWorkspaceID(r))
+	opinionID, ok := parseUUIDOrBadRequest(w, chi.URLParam(r, "id"), "opinion id")
+	if !ok {
+		return
+	}
+	action := chi.URLParam(r, "decision")
+	if action != "approve" && action != "reject" {
+		writeError(w, http.StatusNotFound, "unknown opinion decision")
+		return
+	}
+	tx, err := h.TxStarter.Begin(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to start opinion decision")
+		return
+	}
+	defer tx.Rollback(r.Context())
+	var entryID pgtype.UUID
+	var targetVersion int32
+	var targetSHA, status string
+	if err := tx.QueryRow(r.Context(), `SELECT entry_id, target_version, target_content_sha256, status FROM knowledge_governance_opinion WHERE id = $1 AND workspace_id = $2 FOR UPDATE`, opinionID, workspaceID).Scan(&entryID, &targetVersion, &targetSHA, &status); errors.Is(err, pgx.ErrNoRows) {
+		writeError(w, http.StatusNotFound, "governance opinion not found")
+		return
+	} else if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to load governance opinion")
+		return
+	}
+	if status != "pending" {
+		writeError(w, http.StatusConflict, "governance opinion is no longer pending")
+		return
+	}
+	if action == "approve" {
+		var currentVersion int32
+		var currentSHA string
+		if err := tx.QueryRow(r.Context(), `SELECT current_version, content_sha256 FROM knowledge_entry WHERE id = $1 AND workspace_id = $2 FOR UPDATE`, entryID, workspaceID).Scan(&currentVersion, &currentSHA); err != nil || currentVersion != targetVersion || currentSHA != targetSHA {
+			if _, updateErr := tx.Exec(r.Context(), `UPDATE knowledge_governance_opinion SET status = 'stale', error = 'entry version changed before approval', updated_at = now() WHERE id = $1`, opinionID); updateErr != nil {
+				writeError(w, http.StatusInternalServerError, "failed to mark stale governance opinion")
+				return
+			}
+			if err := tx.Commit(r.Context()); err != nil {
+				writeError(w, http.StatusInternalServerError, "failed to commit stale governance opinion")
+				return
+			}
+			writeError(w, http.StatusConflict, "knowledge entry changed; governance opinion is stale")
+			return
+		}
+	}
+	newStatus := "approved"
+	if action == "reject" {
+		newStatus = "rejected"
+	}
+	if _, err := tx.Exec(r.Context(), `UPDATE knowledge_governance_opinion SET status = $2, decided_by = $3, decided_at = now(), updated_at = now() WHERE id = $1`, opinionID, newStatus, actorID); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to decide governance opinion")
+		return
+	}
+	if err := tx.Commit(r.Context()); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to commit governance opinion")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": newStatus})
+}
+
 type knowledgeGovernanceRunRow struct {
 	ID            pgtype.UUID
 	WorkspaceID   pgtype.UUID
