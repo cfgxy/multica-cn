@@ -24,6 +24,8 @@ func TestPromptQuizAgentScopePersistsExplicitEmptyAndAudit(t *testing.T) {
 	defer testPool.Exec(t.Context(), `DELETE FROM prompt_quiz_agent_scope WHERE agent_id = $1`, agentID)
 	defer testPool.Exec(t.Context(), `DELETE FROM prompt_quiz_item WHERE id = $1`, itemID)
 
+	adminID := dbfx.User(t, "Scope Admin", "scope-admin-"+agentID[:8]+"@multica.test")
+	dbfx.Member(t, wsID, adminID, "admin")
 	route := middleware.RequireWorkspaceRole(testHandler.Queries, "owner", "admin")(http.HandlerFunc(testHandler.PutPromptQuizAgentScope))
 	put := func(userID string, ids []string) (int, string) {
 		req := withURLParam(legislationReq(userID, wsID, http.MethodPut, "/api/prompt-quiz/agents/"+agentID+"/scope", map[string]any{"item_ids": ids}), "agentId", agentID)
@@ -32,6 +34,14 @@ func TestPromptQuizAgentScopePersistsExplicitEmptyAndAudit(t *testing.T) {
 	if code, body := put(memberID, []string{}); code != http.StatusForbidden {
 		t.Fatalf("member scope write = %d: %s", code, body)
 	}
+	if code, body := put(adminID, []string{}); code != http.StatusOK {
+		t.Fatalf("admin scope write = %d: %s", code, body)
+	}
+	// Reset the admin-created explicit marker so the following rejected write
+	// can prove it creates no state for the owner path.
+	dbfx.Exec(t, `DELETE FROM prompt_quiz_agent_scope_item WHERE agent_id = $1`, agentID)
+	dbfx.Exec(t, `DELETE FROM prompt_quiz_agent_scope_audit WHERE agent_id = $1`, agentID)
+	dbfx.Exec(t, `DELETE FROM prompt_quiz_agent_scope WHERE agent_id = $1`, agentID)
 	if code, body := put(ownerID, []string{foreignItemID}); code != http.StatusBadRequest {
 		t.Fatalf("cross-workspace item accepted: %d: %s", code, body)
 	}
