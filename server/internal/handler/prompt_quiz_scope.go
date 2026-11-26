@@ -112,7 +112,10 @@ func (h *Handler) PutPromptQuizAgentScope(w http.ResponseWriter, r *http.Request
 		err := tx.QueryRow(r.Context(), `
 SELECT id FROM prompt_quiz_item
 WHERE id = $1 AND workspace_id = $2 AND active AND runtime_profile = 'member'
-FOR KEY SHARE`, itemID, workspaceID).Scan(&lockedItem)
+-- FOR SHARE conflicts with regular UPDATE as well as DELETE; a successful
+-- scope transaction therefore cannot commit an item that was concurrently
+-- archived or moved out of the member profile.
+FOR SHARE`, itemID, workspaceID).Scan(&lockedItem)
 		if errors.Is(err, pgx.ErrNoRows) {
 			writeError(w, http.StatusBadRequest, "item is not an active member-profile item in this workspace")
 			return
