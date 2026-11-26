@@ -14,6 +14,7 @@ export const knowledgeKeys = {
     [...knowledgeKeys.all(wsId), "entries", dirId, query, lifecycle] as const,
   versions: (wsId: string, entryId: string) => [...knowledgeKeys.all(wsId), "versions", entryId] as const,
   lifecycle: (wsId: string, entryId: string) => [...knowledgeKeys.all(wsId), "lifecycle", entryId] as const,
+  governanceOpinions: (wsId: string) => [...knowledgeKeys.all(wsId), "governance-opinions"] as const,
   governanceRuns: (wsId: string, dirId?: string) => [...knowledgeKeys.all(wsId), "governance-runs", dirId ?? ""] as const,
   governanceConfig: (wsId: string) => [...knowledgeKeys.all(wsId), "governance-config"] as const,
   governanceRun: (wsId: string, runId: string) => [...knowledgeKeys.all(wsId), "governance-run", runId] as const,
@@ -71,6 +72,14 @@ export function useUpdateKnowledgeGovernanceConfig(wsId: string) {
     mutationFn: (patch: Parameters<typeof api.updateKnowledgeGovernanceConfig>[0]) => api.updateKnowledgeGovernanceConfig(patch),
     onSuccess: () => qc.invalidateQueries({ queryKey: knowledgeKeys.all(wsId) }),
   });
+}
+
+export function knowledgeGovernanceOpinionsOptions(wsId: string) {
+  return queryOptions({ queryKey: knowledgeKeys.governanceOpinions(wsId), queryFn: () => api.listKnowledgeGovernanceOpinions(), enabled: !!wsId });
+}
+
+export function useDecideKnowledgeGovernanceOpinion(wsId: string) {
+  return useKnowledgeOperation(wsId, ({ id, decision }: { id: string; decision: "approve" | "reject" }) => api.decideKnowledgeGovernanceOpinion(id, decision));
 }
 
 export function knowledgeGovernanceRunsOptions(wsId: string, dirId?: string) {
