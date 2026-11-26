@@ -16,6 +16,9 @@ const allowedClickHrefs = [
   "http://localhost:8080/uploads/x.png",
   "HTTPS://CDN.EXAMPLE.COM/x",
   ATTACHMENT_DOWNLOAD,
+  "attachment://doc.md",
+  "attachment://./dir/doc.md",
+  `attachment://${ATTACHMENT_ID}`,
 ];
 
 const parsedAllowedFileCardHrefs = [
@@ -24,6 +27,9 @@ const parsedAllowedFileCardHrefs = [
   "https://cdn.example.com/x.md",
   "http://localhost:8080/uploads/x.md",
   ATTACHMENT_DOWNLOAD,
+  "attachment://doc.md",
+  "attachment://./dir/doc.md",
+  `attachment://${ATTACHMENT_ID}`,
 ];
 
 const rejectedFileCardHrefs = [
@@ -44,6 +50,9 @@ const rejectedFileCardHrefs = [
   "",
   "ftp://example.com/x",
   "uploads/x",
+  "attachment://",
+  "attachment://../secret.txt",
+  "attachment://dir/../secret.txt",
 ];
 
 describe("isAllowedFileCardHref", () => {
@@ -116,5 +125,15 @@ describe("preprocessFileCards (integration)", () => {
   it("leaves a non-/uploads relative path untouched", () => {
     const out = preprocessFileCards("!file[name](/api/internal/x)", cdn);
     expect(out).not.toContain('data-type="fileCard"');
+  });
+
+  it("converts !file[…](attachment://…) into a file-card div and rejects traversal", () => {
+    const ok = preprocessFileCards("!file[report.pdf](attachment://report.pdf)", cdn);
+    expect(ok).toContain('data-type="fileCard"');
+    expect(ok).toContain('data-href="attachment://report.pdf"');
+    expect(ok).toContain('data-filename="report.pdf"');
+
+    const bad = preprocessFileCards("!file[secret](attachment://../secret.txt)", cdn);
+    expect(bad).not.toContain('data-type="fileCard"');
   });
 });

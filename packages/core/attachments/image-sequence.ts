@@ -21,8 +21,13 @@
 
 import type { Attachment } from "../types/attachment";
 import {
+  attachmentFilenameBasename,
   attachmentIdFromDownloadURL,
   contentReferencesAttachment,
+  isAttachmentProtocolURL,
+  maskMarkdownCode,
+  normalizeAttachmentFilename,
+  parseAttachmentProtocolTarget,
 } from "../types/attachment-url";
 
 // Extension fallback for the image test. Mirrors IMAGE_EXTS in
@@ -95,15 +100,14 @@ function matchesAttachmentURL(
 /**
  * Resolve a URL embedded in a markdown body back to its attachment record.
  *
- * Two fallbacks, in order — the same pair `AttachmentDownloadProvider` uses
- * (and now shares with this module so a URL can never resolve to one record
- * for the download click and another for the sequence):
+ * Three fallbacks, in order — shared across `AttachmentDownloadProvider`,
+ * `collectImageSequence`, and mobile `MarkdownImage`:
  *
- *   1. id extracted from the stable `/api/attachments/<id>/download` shape
- *      that every post-MUL-3130 body persists. Survives a host swap and any
- *      incidental query / fragment.
- *   2. full-URL equality against `url` / `download_url` / `markdown_url`, for
- *      legacy bodies and CDN markdown that never got the stable shape.
+ *   1. id extracted from the stable `/api/attachments/<id>/download` shape.
+ *   2. `attachment://<id|filename|relpath>` protocol reference (id match
+ *      first, then normalized relative filename, then basename; unmatched
+ *      `attachment://` URLs return undefined without falling through).
+ *   3. full-URL equality against `url` / `download_url` / `markdown_url`.
  */
 export function matchAttachmentByURL(
   url: string,
@@ -114,6 +118,24 @@ export function matchAttachmentByURL(
   if (idFromUrl) {
     const byId = attachments.find((a) => a.id === idFromUrl);
     if (byId) return byId;
+  }
+  const protocolTarget = parseAttachmentProtocolTarget(url);
+  if (protocolTarget) {
+    if (protocolTarget.id) {
+      return attachments.find(
+        (a) => a.id.toLowerCase() === protocolTarget.id,
+      );
+    }
+    const exactFull = attachments.find(
+      (a) => normalizeAttachmentFilename(a.filename) === protocolTarget.rawTarget,
+    );
+    if (exactFull) return exactFull;
+    const exactBasename = attachments.find(
+      (a) =>
+        normalizeAttachmentFilename(a.filename) === protocolTarget.filename ||
+        attachmentFilenameBasename(a.filename) === protocolTarget.filename,
+    );
+    return exactBasename;
   }
   return attachments.find(
     (a) =>
@@ -155,47 +177,6 @@ export function selectStandaloneAttachments(
 // Inline image references
 // ---------------------------------------------------------------------------
 
-function blankOut(text: string): string {
-  // Newlines survive so line-anchored patterns below keep their line numbers.
-  return text.replace(/[^\n]/g, " ");
-}
-
-/**
- * Blank every code span and fenced block, preserving offsets and line breaks.
- *
- * Without this, an `![shot](url)` shown as an EXAMPLE inside a fenced block —
- * common in agent replies explaining markdown — would be counted as a real
- * image and the reader would page onto something that was never rendered.
- *
- * Line scanner rather than one multiline regex: a backreferenced
- * `(`{3,})[\s\S]*?\1` over agent output is a ReDoS shape, and this runs on
- * every issue/chat render.
- */
-function maskCode(content: string): string {
-  const lines = content.split("\n");
-  let fence: string | null = null;
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i]!;
-    const fenceMatch = /^[ \t]{0,3}(`{3,}|~{3,})/.exec(line);
-    if (fence !== null) {
-      lines[i] = blankOut(line);
-      const closes =
-        fenceMatch !== null &&
-        fenceMatch[1]![0] === fence[0] &&
-        fenceMatch[1]!.length >= fence.length;
-      if (closes) fence = null;
-      continue;
-    }
-    if (fenceMatch !== null) {
-      fence = fenceMatch[1]!;
-      lines[i] = blankOut(line);
-      continue;
-    }
-    lines[i] = line.replace(/(`+)[^`\n]*?\1/g, blankOut);
-  }
-  return lines.join("\n");
-}
-
 interface InlineImageRef {
   index: number;
   url: string;
@@ -232,7 +213,7 @@ function unescapeLabel(label: string): string {
 
 function extractInlineImageRefs(rawContent: string): InlineImageRef[] {
   if (!rawContent) return [];
-  const content = maskCode(rawContent);
+  const content = maskMarkdownCode(rawContent);
   const refs: InlineImageRef[] = [];
 
   for (const m of content.matchAll(MARKDOWN_IMAGE_RE)) {
@@ -296,6 +277,10 @@ export interface ImageSequenceItem {
 export interface ImageSequenceBlock {
   content?: string | null;
   attachments?: ReadonlyArray<Attachment> | null;
+  /** Optional fallback pool (e.g. issue-level attachments for cross-comment
+   *  `attachment://` refs) consulted for inline refs after `attachments`,
+   *  never rendered as standalone cards under this block. */
+  fallbackAttachments?: ReadonlyArray<Attachment> | null;
 }
 
 /**
@@ -324,7 +309,12 @@ export function collectImageSequence(
     const attachments = block.attachments ?? [];
 
     for (const ref of extractInlineImageRefs(content)) {
-      const attachment = matchAttachmentByURL(ref.url, attachments);
+      const attachment =
+        matchAttachmentByURL(ref.url, attachments) ??
+        matchAttachmentByURL(ref.url, block.fallbackAttachments);
+      if (!attachment && isAttachmentProtocolURL(ref.url)) {
+        continue;
+      }
       if (ref.requiresImageCheck) {
         const isImage = attachment
           ? isImageAttachment(attachment.content_type, attachment.filename)
