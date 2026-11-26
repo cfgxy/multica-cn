@@ -366,7 +366,26 @@ func (h *Handler) UpdateKnowledgeGovernanceConfig(w http.ResponseWriter, r *http
 	if !ok {
 		return
 	}
-	current, err := h.governanceConfig(r.Context(), workspaceID)
+	tx, err := h.TxStarter.Begin(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to start knowledge governance config update")
+		return
+	}
+	defer tx.Rollback(r.Context()) //nolint:errcheck
+	// The workspace row serializes first-time inserts as well as updates to an
+	// existing config row. Holding both locks until audit insertion commits
+	// makes version allocation and its immutable audit record one operation.
+	var lockedWorkspace pgtype.UUID
+	if err := tx.QueryRow(r.Context(), `SELECT id FROM workspace WHERE id = $1 FOR UPDATE`, workspaceID).Scan(&lockedWorkspace); err != nil {
+		writeError(w, http.StatusNotFound, "workspace not found")
+		return
+	}
+	var current knowledgeGovernanceConfigRow
+	err = tx.QueryRow(r.Context(), `
+SELECT enabled, agent_id, cadence, timezone, version, next_eligible_at, updated_by, updated_at
+FROM knowledge_governance_config WHERE workspace_id = $1 FOR UPDATE`, workspaceID).Scan(
+		&current.Enabled, &current.AgentID, &current.Cadence, &current.Timezone, &current.Version, &current.NextEligibleAt, &current.UpdatedBy, &current.UpdatedAt,
+	)
 	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 		writeError(w, http.StatusInternalServerError, "failed to read knowledge governance config")
 		return
@@ -433,12 +452,6 @@ func (h *Handler) UpdateKnowledgeGovernanceConfig(w http.ResponseWriter, r *http
 	if version < 1 {
 		version = 1
 	}
-	tx, err := h.TxStarter.Begin(r.Context())
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to start knowledge governance config update")
-		return
-	}
-	defer tx.Rollback(r.Context()) //nolint:errcheck
 	_, err = tx.Exec(r.Context(), `
 INSERT INTO knowledge_governance_config (workspace_id, enabled, agent_id, cadence, timezone, version, next_eligible_at, updated_by)
 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
