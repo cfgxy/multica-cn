@@ -13,6 +13,11 @@ func TestPromptQuizAgentScopePersistsExplicitEmptyAndAudit(t *testing.T) {
 	itemID := dbfx.Insert(t, "prompt_quiz_item", map[string]any{
 		"workspace_id": wsID, "slug": "scope-item-" + agentID[:8], "title": "scope item", "body": "scope body", "runtime_profile": "member",
 	})
+	otherWSID, _, _ := legislationFixture(t)
+	foreignItemID := dbfx.Insert(t, "prompt_quiz_item", map[string]any{
+		"workspace_id": otherWSID, "slug": "foreign-scope-item-" + agentID[:8], "title": "foreign", "body": "foreign body", "runtime_profile": "member",
+	})
+	defer testPool.Exec(t.Context(), `DELETE FROM prompt_quiz_item WHERE id = $1`, foreignItemID)
 	defer testPool.Exec(t.Context(), `DELETE FROM prompt_quiz_agent_scope_item WHERE agent_id = $1`, agentID)
 	defer testPool.Exec(t.Context(), `DELETE FROM prompt_quiz_agent_scope_audit WHERE agent_id = $1`, agentID)
 	defer testPool.Exec(t.Context(), `DELETE FROM prompt_quiz_agent_scope WHERE agent_id = $1`, agentID)
@@ -21,6 +26,9 @@ func TestPromptQuizAgentScopePersistsExplicitEmptyAndAudit(t *testing.T) {
 	put := func(ids []string) (int, string) {
 		req := withURLParam(legislationReq(ownerID, wsID, http.MethodPut, "/api/prompt-quiz/agents/"+agentID+"/scope", map[string]any{"item_ids": ids}), "agentId", agentID)
 		return legislationCall(t, testHandler.PutPromptQuizAgentScope, req)
+	}
+	if code, body := put([]string{foreignItemID}); code != http.StatusBadRequest {
+		t.Fatalf("cross-workspace item accepted: %d: %s", code, body)
 	}
 	if code, body := put([]string{itemID}); code != http.StatusOK {
 		t.Fatalf("set scope = %d: %s", code, body)
