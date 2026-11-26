@@ -5510,6 +5510,9 @@ export const KnowledgeGovernanceConfigSchema = z.object({
   version: z.number().int().default(0),
   source: z.enum(["default", "explicit"]).catch("default"),
   updated_at: z.string().optional(),
+  executable: z.boolean().catch(false),
+  block_reason: z.string().optional(),
+  next_scheduled_at: z.string().optional(),
   audit: z.array(KnowledgeGovernanceConfigAuditSchema).default([]),
 }).loose();
 

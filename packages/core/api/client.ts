@@ -5946,7 +5946,7 @@ export class ApiClient {
   async getKnowledgeGovernanceConfig(): Promise<KnowledgeGovernanceConfig> {
     const raw = await this.fetch<unknown>("/api/knowledge/governance/config");
     return parseWithFallback(raw, KnowledgeGovernanceConfigSchema, {
-      enabled: false, agent_id: "", agent_name: "", cadence: "daily", timezone: "UTC", version: 0, source: "default", audit: [],
+      enabled: false, agent_id: "", agent_name: "", cadence: "daily", timezone: "UTC", version: 0, source: "default", executable: false, audit: [],
     }, { endpoint: "GET /api/knowledge/governance/config" });
   }
 
@@ -5956,7 +5956,7 @@ export class ApiClient {
       body: JSON.stringify(patch),
     });
     return parseWithFallback(raw, KnowledgeGovernanceConfigSchema, {
-      enabled: false, agent_id: "", agent_name: "", cadence: "daily", timezone: "UTC", version: 0, source: "default", audit: [],
+      enabled: false, agent_id: "", agent_name: "", cadence: "daily", timezone: "UTC", version: 0, source: "default", executable: false, audit: [],
     }, { endpoint: "PUT /api/knowledge/governance/config" });
   }
 
