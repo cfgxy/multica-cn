@@ -213,6 +213,19 @@ func NextSchedule(now time.Time, cadence, timezone string) (time.Time, error) {
 	}
 }
 
+// DisplayNextSchedule returns the next strictly future boundary for an
+// established configuration, while preserving the persisted initial
+// eligibility anchor until that first run window arrives. This deliberately
+// differs from eligibility: after the initial window is due, scheduling may
+// claim the current bucket, while the UI correctly advertises the following
+// calendar boundary instead of a stale past timestamp.
+func DisplayNextSchedule(now time.Time, cadence, timezone string, initialEligibility time.Time) (time.Time, error) {
+	if initialEligibility.After(now) {
+		return initialEligibility, nil
+	}
+	return NextSchedule(now, cadence, timezone)
+}
+
 // scheduleBucket is the durable, local-time execution window. ISO weeks start
 // on Monday; month buckets naturally choose the first local calendar day. A
 // persisted bucket means restarts and repeated scheduler leases never replay a

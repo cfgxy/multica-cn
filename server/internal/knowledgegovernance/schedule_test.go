@@ -56,6 +56,25 @@ func TestNextScheduleUsesFutureLocalBoundary(t *testing.T) {
 	}
 }
 
+func TestDisplayNextScheduleAdvancesAfterInitialEligibility(t *testing.T) {
+	anchor := time.Date(2026, time.November, 27, 0, 0, 0, 0, time.UTC)
+	got, err := DisplayNextSchedule(time.Date(2026, time.November, 27, 1, 5, 0, 0, time.UTC), "daily", "UTC", anchor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := time.Date(2026, time.November, 28, 0, 0, 0, 0, time.UTC)
+	if !got.Equal(want) {
+		t.Fatalf("DisplayNextSchedule() = %s; want %s", got, want)
+	}
+
+	// Before the first eligible window, API readback must remain the immutable
+	// anchor that the scheduler will check, rather than inventing a later value.
+	got, err = DisplayNextSchedule(time.Date(2026, time.November, 26, 10, 15, 0, 0, time.UTC), "daily", "UTC", anchor)
+	if err != nil || !got.Equal(anchor) {
+		t.Fatalf("pre-anchor DisplayNextSchedule() = %s, %v; want %s", got, err, anchor)
+	}
+}
+
 func TestScheduleBucketRejectsInvalidConfiguration(t *testing.T) {
 	if _, err := scheduleBucket(time.Now(), "yearly", "UTC"); err == nil {
 		t.Fatal("unsupported cadence must fail")

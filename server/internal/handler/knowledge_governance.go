@@ -302,10 +302,12 @@ func (h *Handler) governanceConfigResponse(ctx context.Context, workspaceID pgty
 		response.BlockReason = "agent_unavailable"
 	} else if !cfg.NextEligibleAt.Valid {
 		response.BlockReason = "invalid_schedule"
+	} else if next, nextErr := knowledgegovernance.DisplayNextSchedule(h.now(), cfg.Cadence, cfg.Timezone, cfg.NextEligibleAt.Time); nextErr != nil {
+		response.BlockReason = "invalid_schedule"
 	} else {
 		response.AgentName = agent.Name
 		response.Executable = true
-		response.NextScheduledAt = cfg.NextEligibleAt.Time.UTC().Format(httpTimeFormat)
+		response.NextScheduledAt = next.UTC().Format(httpTimeFormat)
 	}
 	rows, err := h.DB.Query(ctx, `
 SELECT config_version, actor_id, before_value, after_value, created_at
