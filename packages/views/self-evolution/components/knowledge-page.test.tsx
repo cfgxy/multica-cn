@@ -239,15 +239,16 @@ describe("KnowledgePageBody", () => {
   it("renders and saves the independent governance configuration", async () => {
     m.role = "owner";
     m.governanceConfig = {
-      enabled: false, agent_id: "agent-1", agent_name: "governance executor", cadence: "weekly", timezone: "Asia/Shanghai", version: 3, source: "explicit", executable: true, next_scheduled_at: "2026-12-01T00:00:00Z", audit: [{ version: 3, actor_id: "owner-1", before_value: {}, after_value: {}, created_at: "2026-11-26T00:00:00Z" }],
+      enabled: true, agent_id: "agent-1", agent_name: "governance executor", cadence: "weekly", timezone: "Asia/Shanghai", version: 3, source: "explicit", executable: true, next_scheduled_at: "2026-12-01T00:00:00Z", audit: [{ version: 3, actor_id: "owner-1", before_value: {}, after_value: {}, created_at: "2026-11-26T00:00:00Z" }],
     };
     mount();
 
     await waitFor(() => expect(screen.getByTestId("knowledge-governance-config-source")).toHaveTextContent("版本：3"));
+    expect(screen.getByTestId("knowledge-governance-next-schedule")).toHaveTextContent("2026-12-01T00:00:00Z");
     await userEvent.click(screen.getByRole("checkbox", { name: "启用" }));
     await userEvent.click(screen.getByRole("button", { name: "保存" }));
     expect(m.updateGovernanceConfigMutate).toHaveBeenCalledWith(
-      { enabled: true, agent_id: "agent-1", cadence: "weekly", timezone: "Asia/Shanghai" },
+      { enabled: false, agent_id: "agent-1", cadence: "weekly", timezone: "Asia/Shanghai" },
       expect.anything(),
     );
   });
