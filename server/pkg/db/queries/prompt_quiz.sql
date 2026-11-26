@@ -145,6 +145,19 @@ FROM prompt_quiz_item
 WHERE workspace_id = sqlc.arg('workspace_id')::uuid
   AND active
   AND runtime_profile = sqlc.arg('runtime_profile')::text
+  -- A missing marker is legacy all-active behavior. A present marker with no
+  -- children is an explicit empty range and returns no delivery candidates.
+  AND (
+      NOT EXISTS (
+          SELECT 1 FROM prompt_quiz_agent_scope s
+          WHERE s.agent_id = sqlc.arg('agent_id')::uuid
+      )
+      OR EXISTS (
+          SELECT 1 FROM prompt_quiz_agent_scope_item si
+          WHERE si.agent_id = sqlc.arg('agent_id')::uuid
+            AND si.item_id = prompt_quiz_item.id
+      )
+  )
 ORDER BY id;
 
 -- name: UpsertPromptQuizResult :one
