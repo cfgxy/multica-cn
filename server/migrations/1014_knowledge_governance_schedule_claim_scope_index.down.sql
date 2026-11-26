@@ -1,0 +1,1 @@
+DROP INDEX CONCURRENTLY uidx_knowledge_governance_schedule_claim_scope;

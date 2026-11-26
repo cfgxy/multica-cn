@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5"
@@ -54,6 +55,217 @@ type KnowledgeGovernanceFindingResponse struct {
 	WritebackAuthorized bool            `json:"writeback_authorized"`
 	LifecycleEventRef   string          `json:"lifecycle_event_ref"`
 	CreatedAt           string          `json:"created_at"`
+}
+
+type KnowledgeGovernanceOpinionResponse struct {
+	ID                  string `json:"id"`
+	DirID               string `json:"dir_id"`
+	EntryID             string `json:"entry_id"`
+	RunID               string `json:"run_id"`
+	FindingID           string `json:"finding_id"`
+	Action              string `json:"action"`
+	ProposedContent     string `json:"proposed_content"`
+	TargetVersion       int32  `json:"target_version"`
+	TargetContentSHA256 string `json:"target_content_sha256"`
+	Status              string `json:"status"`
+	CreatedAt           string `json:"created_at"`
+}
+
+func (h *Handler) ListKnowledgeGovernanceOpinions(w http.ResponseWriter, r *http.Request) {
+	workspaceID, ok := parseUUIDOrBadRequest(w, h.resolveWorkspaceID(r), "workspace id")
+	if !ok {
+		return
+	}
+	rows, err := h.DB.Query(r.Context(), `SELECT id, dir_id, entry_id, run_id, finding_id, action, proposed_content, target_version, target_content_sha256, status, created_at
+FROM knowledge_governance_opinion WHERE workspace_id = $1 ORDER BY created_at DESC LIMIT 100`, workspaceID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to list governance opinions")
+		return
+	}
+	defer rows.Close()
+	out := make([]KnowledgeGovernanceOpinionResponse, 0)
+	for rows.Next() {
+		var item KnowledgeGovernanceOpinionResponse
+		var id, dirID, entryID, runID, findingID pgtype.UUID
+		var created pgtype.Timestamptz
+		if err := rows.Scan(&id, &dirID, &entryID, &runID, &findingID, &item.Action, &item.ProposedContent, &item.TargetVersion, &item.TargetContentSHA256, &item.Status, &created); err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to read governance opinion")
+			return
+		}
+		item.ID, item.DirID, item.EntryID, item.RunID, item.FindingID = uuidToString(id), uuidToString(dirID), uuidToString(entryID), uuidToString(runID), uuidToString(findingID)
+		item.CreatedAt = created.Time.UTC().Format(httpTimeFormat)
+		out = append(out, item)
+	}
+	if err := rows.Err(); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to list governance opinions")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"opinions": out})
+}
+
+func (h *Handler) DecideKnowledgeGovernanceOpinion(w http.ResponseWriter, r *http.Request) {
+	actorID, ok := requireUserID(w, r)
+	if !ok {
+		return
+	}
+	workspaceID := parseUUID(h.resolveWorkspaceID(r))
+	opinionID, ok := parseUUIDOrBadRequest(w, chi.URLParam(r, "id"), "opinion id")
+	if !ok {
+		return
+	}
+	action := chi.URLParam(r, "decision")
+	if action != "approve" && action != "reject" {
+		writeError(w, http.StatusNotFound, "unknown opinion decision")
+		return
+	}
+	tx, err := h.TxStarter.Begin(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to start opinion decision")
+		return
+	}
+	defer tx.Rollback(r.Context())
+	var entryID, dirID pgtype.UUID
+	var targetVersion int32
+	var targetSHA, status, opinionAction, proposedContent string
+	if err := tx.QueryRow(r.Context(), `SELECT entry_id, dir_id, target_version, target_content_sha256, status, action, proposed_content FROM knowledge_governance_opinion WHERE id = $1 AND workspace_id = $2 FOR UPDATE`, opinionID, workspaceID).Scan(&entryID, &dirID, &targetVersion, &targetSHA, &status, &opinionAction, &proposedContent); errors.Is(err, pgx.ErrNoRows) {
+		writeError(w, http.StatusNotFound, "governance opinion not found")
+		return
+	} else if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to load governance opinion")
+		return
+	}
+	if status != "pending" {
+		writeError(w, http.StatusConflict, "governance opinion is no longer pending")
+		return
+	}
+	if action == "approve" {
+		var currentVersion int32
+		var currentSHA string
+		if err := tx.QueryRow(r.Context(), `SELECT current_version, content_sha256 FROM knowledge_entry WHERE id = $1 AND workspace_id = $2 FOR UPDATE`, entryID, workspaceID).Scan(&currentVersion, &currentSHA); err != nil || currentVersion != targetVersion || currentSHA != targetSHA {
+			if _, updateErr := tx.Exec(r.Context(), `UPDATE knowledge_governance_opinion SET status = 'stale', error = 'entry version changed before approval', updated_at = now() WHERE id = $1`, opinionID); updateErr != nil {
+				writeError(w, http.StatusInternalServerError, "failed to mark stale governance opinion")
+				return
+			}
+			if err := tx.Commit(r.Context()); err != nil {
+				writeError(w, http.StatusInternalServerError, "failed to commit stale governance opinion")
+				return
+			}
+			writeError(w, http.StatusConflict, "knowledge entry changed; governance opinion is stale")
+			return
+		}
+	}
+	newStatus := "approved"
+	if action == "reject" {
+		newStatus = "rejected"
+	} else {
+		var dirKind string
+		var projectID pgtype.UUID
+		var managedActive, removed bool
+		isManaged := false
+		if err := tx.QueryRow(r.Context(), `SELECT kind, project_id, managed_active, removed FROM knowledge_dir WHERE id = $1 AND workspace_id = $2`, dirID, workspaceID).Scan(&dirKind, &projectID, &managedActive, &removed); err == nil {
+			isManaged = dirKind == "candidate_cli" && !projectID.Valid && managedActive && !removed
+		}
+
+		if isManaged {
+			if opinionAction == "revise" {
+				nextVersion := targetVersion + 1
+				contentSHA := knowledgeContentSHA(proposedContent)
+				var versionID pgtype.UUID
+				if err := tx.QueryRow(r.Context(), `INSERT INTO knowledge_entry_version (workspace_id, entry_id, version, content, content_sha256, source, created_by)
+VALUES ($1, $2, $3, $4, $5, 'governance', $6) RETURNING id`, workspaceID, entryID, nextVersion, proposedContent, contentSHA, actorID).Scan(&versionID); err != nil {
+					writeError(w, http.StatusInternalServerError, "failed to version approved governance revision")
+					return
+				}
+				if _, err := tx.Exec(r.Context(), `UPDATE knowledge_entry SET writeback_state = 'queued', writeback_error = '' WHERE id = $1 AND workspace_id = $2`, entryID, workspaceID); err != nil {
+					writeError(w, http.StatusInternalServerError, "failed to queue entry writeback")
+					return
+				}
+				var eventID pgtype.UUID
+				if err := tx.QueryRow(r.Context(), `INSERT INTO knowledge_lifecycle_event (workspace_id, entry_id, from_state, to_state, operation, reason, evidence_ref, version_id, expected_content_sha256, writeback_state, actor_id)
+SELECT $1, $2, lifecycle_state, lifecycle_state, 'writeback_restore', 'approved governance revision', 'governance_opinion:' || $3::text, $4, $5, 'queued', $6 FROM knowledge_entry WHERE id = $2 RETURNING id`, workspaceID, entryID, opinionID, versionID, targetSHA, actorID).Scan(&eventID); err != nil {
+					writeError(w, http.StatusInternalServerError, "failed to audit approved governance revision")
+					return
+				}
+				if _, err := tx.Exec(r.Context(), `UPDATE knowledge_governance_opinion SET lifecycle_event_id = $2 WHERE id = $1`, opinionID, eventID); err != nil {
+					writeError(w, http.StatusInternalServerError, "failed to link governance revision audit")
+					return
+				}
+				newStatus = "applying"
+			} else {
+				if _, err := tx.Exec(r.Context(), `UPDATE knowledge_entry SET lifecycle_state = 'deprecated', writeback_state = 'queued', writeback_error = '' WHERE id = $1 AND workspace_id = $2`, entryID, workspaceID); err != nil {
+					writeError(w, http.StatusInternalServerError, "failed to apply approved governance deletion")
+					return
+				}
+				var currentVersionID pgtype.UUID
+				if err := tx.QueryRow(r.Context(), `SELECT id FROM knowledge_entry_version WHERE entry_id = $1 AND workspace_id = $2 AND version = $3`, entryID, workspaceID, targetVersion).Scan(&currentVersionID); err != nil {
+					writeError(w, http.StatusInternalServerError, "failed to find current version for deletion writeback")
+					return
+				}
+				var eventID pgtype.UUID
+				if err := tx.QueryRow(r.Context(), `INSERT INTO knowledge_lifecycle_event (workspace_id, entry_id, from_state, to_state, operation, reason, evidence_ref, version_id, expected_content_sha256, writeback_state, actor_id)
+VALUES ($1, $2, 'active', 'deprecated', 'writeback_remove', 'approved governance deletion', 'governance_opinion:' || $3::text, $4, $5, 'queued', $6) RETURNING id`, workspaceID, entryID, opinionID, currentVersionID, targetSHA, actorID).Scan(&eventID); err != nil {
+					writeError(w, http.StatusInternalServerError, "failed to audit approved governance deletion")
+					return
+				}
+				if _, err := tx.Exec(r.Context(), `UPDATE knowledge_governance_opinion SET lifecycle_event_id = $2 WHERE id = $1`, opinionID, eventID); err != nil {
+					writeError(w, http.StatusInternalServerError, "failed to link governance deletion audit")
+					return
+				}
+				newStatus = "applying"
+			}
+		} else {
+			if opinionAction == "revise" {
+				nextVersion := targetVersion + 1
+				contentSHA := knowledgeContentSHA(proposedContent)
+				var versionID pgtype.UUID
+				if err := tx.QueryRow(r.Context(), `INSERT INTO knowledge_entry_version (workspace_id, entry_id, version, content, content_sha256, source, created_by)
+VALUES ($1, $2, $3, $4, $5, 'governance', $6) RETURNING id`, workspaceID, entryID, nextVersion, proposedContent, contentSHA, actorID).Scan(&versionID); err != nil {
+					writeError(w, http.StatusInternalServerError, "failed to version approved governance revision")
+					return
+				}
+				if _, err := tx.Exec(r.Context(), `UPDATE knowledge_entry SET content = $2, content_sha256 = $3, current_version = $4, last_confirmed_at = now(), mirror_state = 'synced' WHERE id = $1 AND workspace_id = $5`, entryID, proposedContent, contentSHA, nextVersion, workspaceID); err != nil {
+					writeError(w, http.StatusInternalServerError, "failed to apply approved governance revision")
+					return
+				}
+				var eventID pgtype.UUID
+				if err := tx.QueryRow(r.Context(), `INSERT INTO knowledge_lifecycle_event (workspace_id, entry_id, from_state, to_state, operation, reason, evidence_ref, version_id, actor_id, completed_at)
+SELECT $1, $2, lifecycle_state, lifecycle_state, 'transition', 'approved governance revision', 'governance_opinion:' || $3::text, $4, $5, now() FROM knowledge_entry WHERE id = $2 RETURNING id`, workspaceID, entryID, opinionID, versionID, actorID).Scan(&eventID); err != nil {
+					writeError(w, http.StatusInternalServerError, "failed to audit approved governance revision")
+					return
+				}
+				if _, err := tx.Exec(r.Context(), `UPDATE knowledge_governance_opinion SET lifecycle_event_id = $2 WHERE id = $1`, opinionID, eventID); err != nil {
+					writeError(w, http.StatusInternalServerError, "failed to link governance revision audit")
+					return
+				}
+				newStatus = "applied"
+			} else {
+				if _, err := tx.Exec(r.Context(), `UPDATE knowledge_entry SET lifecycle_state = 'deprecated' WHERE id = $1 AND workspace_id = $2`, entryID, workspaceID); err != nil {
+					writeError(w, http.StatusInternalServerError, "failed to apply approved governance deletion")
+					return
+				}
+				var eventID pgtype.UUID
+				if err := tx.QueryRow(r.Context(), `INSERT INTO knowledge_lifecycle_event (workspace_id, entry_id, from_state, to_state, operation, reason, evidence_ref, actor_id, completed_at)
+VALUES ($1, $2, 'active', 'deprecated', 'transition', 'approved governance deletion', 'governance_opinion:' || $3::text, $4, now()) RETURNING id`, workspaceID, entryID, opinionID, actorID).Scan(&eventID); err != nil {
+					writeError(w, http.StatusInternalServerError, "failed to audit approved governance deletion")
+					return
+				}
+				if _, err := tx.Exec(r.Context(), `UPDATE knowledge_governance_opinion SET lifecycle_event_id = $2 WHERE id = $1`, opinionID, eventID); err != nil {
+					writeError(w, http.StatusInternalServerError, "failed to link governance deletion audit")
+					return
+				}
+				newStatus = "applied"
+			}
+		}
+	}
+	if _, err := tx.Exec(r.Context(), `UPDATE knowledge_governance_opinion SET status = $2, decided_by = $3, decided_at = now(), updated_at = now() WHERE id = $1`, opinionID, newStatus, actorID); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to decide governance opinion")
+		return
+	}
+	if err := tx.Commit(r.Context()); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to commit governance opinion")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": newStatus})
 }
 
 type knowledgeGovernanceRunRow struct {
@@ -228,8 +440,257 @@ ORDER BY created_at ASC`, run.ID, run.WorkspaceID)
 	writeJSON(w, http.StatusOK, map[string]any{"run": knowledgeGovernanceRunToResponse(run), "findings": findings})
 }
 
-// StartKnowledgeGovernanceRun creates an asynchronous advisory run. It never
-// performs scan, model, or bd work in the HTTP request.
+type knowledgeGovernanceConfigResponse struct {
+	Enabled         bool                                     `json:"enabled"`
+	AgentID         string                                   `json:"agent_id"`
+	AgentName       string                                   `json:"agent_name"`
+	Cadence         string                                   `json:"cadence"`
+	Timezone        string                                   `json:"timezone"`
+	Version         int32                                    `json:"version"`
+	Source          string                                   `json:"source"`
+	UpdatedAt       string                                   `json:"updated_at,omitempty"`
+	Executable      bool                                     `json:"executable"`
+	BlockReason     string                                   `json:"block_reason,omitempty"`
+	NextScheduledAt string                                   `json:"next_scheduled_at,omitempty"`
+	Audit           []knowledgeGovernanceConfigAuditResponse `json:"audit"`
+}
+
+type knowledgeGovernanceConfigAuditResponse struct {
+	Version     int32           `json:"version"`
+	ActorID     string          `json:"actor_id"`
+	BeforeValue json.RawMessage `json:"before_value"`
+	AfterValue  json.RawMessage `json:"after_value"`
+	CreatedAt   string          `json:"created_at"`
+}
+
+type knowledgeGovernanceConfigRow struct {
+	Enabled        bool
+	AgentID        pgtype.UUID
+	Cadence        string
+	Timezone       string
+	Version        int32
+	NextEligibleAt pgtype.Timestamptz
+	UpdatedBy      pgtype.UUID
+	UpdatedAt      pgtype.Timestamptz
+}
+
+func (h *Handler) now() time.Time {
+	if h.Now != nil {
+		return h.Now()
+	}
+	return time.Now()
+}
+
+func (h *Handler) governanceConfig(ctx context.Context, workspaceID pgtype.UUID) (knowledgeGovernanceConfigRow, error) {
+	var cfg knowledgeGovernanceConfigRow
+	err := h.DB.QueryRow(ctx, `
+SELECT enabled, agent_id, cadence, timezone, version, next_eligible_at, updated_by, updated_at
+FROM knowledge_governance_config WHERE workspace_id = $1`, workspaceID).Scan(
+		&cfg.Enabled, &cfg.AgentID, &cfg.Cadence, &cfg.Timezone, &cfg.Version, &cfg.NextEligibleAt, &cfg.UpdatedBy, &cfg.UpdatedAt,
+	)
+	return cfg, err
+}
+
+func (h *Handler) governanceConfigResponse(ctx context.Context, workspaceID pgtype.UUID) (knowledgeGovernanceConfigResponse, error) {
+	cfg, err := h.governanceConfig(ctx, workspaceID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return knowledgeGovernanceConfigResponse{
+			Enabled: false, Cadence: "daily", Timezone: "UTC", Source: "default", BlockReason: "disabled", Audit: []knowledgeGovernanceConfigAuditResponse{},
+		}, nil
+	}
+	if err != nil {
+		return knowledgeGovernanceConfigResponse{}, err
+	}
+	response := knowledgeGovernanceConfigResponse{
+		Enabled: cfg.Enabled, AgentID: uuidToString(cfg.AgentID), Cadence: cfg.Cadence, Timezone: cfg.Timezone,
+		Version: cfg.Version, Source: "explicit", Audit: []knowledgeGovernanceConfigAuditResponse{},
+	}
+	if !cfg.Enabled {
+		response.BlockReason = "disabled"
+	} else if !cfg.AgentID.Valid {
+		response.BlockReason = "agent_not_configured"
+	} else if agent, agentErr := h.Queries.GetAgent(ctx, cfg.AgentID); agentErr != nil || agent.ArchivedAt.Valid || !agent.RuntimeID.Valid {
+		response.BlockReason = "agent_unavailable"
+	} else if !cfg.NextEligibleAt.Valid {
+		response.BlockReason = "invalid_schedule"
+	} else if next, nextErr := knowledgegovernance.DisplayNextSchedule(h.now(), cfg.Cadence, cfg.Timezone, cfg.NextEligibleAt.Time); nextErr != nil {
+		response.BlockReason = "invalid_schedule"
+	} else {
+		response.AgentName = agent.Name
+		response.Executable = true
+		response.NextScheduledAt = next.UTC().Format(httpTimeFormat)
+	}
+	rows, err := h.DB.Query(ctx, `
+SELECT config_version, actor_id, before_value, after_value, created_at
+FROM knowledge_governance_config_audit
+WHERE workspace_id = $1 ORDER BY created_at DESC LIMIT 20`, workspaceID)
+	if err != nil {
+		return knowledgeGovernanceConfigResponse{}, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var audit knowledgeGovernanceConfigAuditResponse
+		var actor pgtype.UUID
+		var created pgtype.Timestamptz
+		if err := rows.Scan(&audit.Version, &actor, &audit.BeforeValue, &audit.AfterValue, &created); err != nil {
+			return knowledgeGovernanceConfigResponse{}, err
+		}
+		audit.ActorID = uuidToString(actor)
+		if created.Valid {
+			audit.CreatedAt = created.Time.UTC().Format(httpTimeFormat)
+		}
+		response.Audit = append(response.Audit, audit)
+	}
+	return response, rows.Err()
+}
+
+// GetKnowledgeGovernanceConfig returns the independent, persisted scheduler
+// controls and their recent audit trail. The router limits this to members.
+func (h *Handler) GetKnowledgeGovernanceConfig(w http.ResponseWriter, r *http.Request) {
+	workspaceID, ok := parseUUIDOrBadRequest(w, h.resolveWorkspaceID(r), "workspace id")
+	if !ok {
+		return
+	}
+	response, err := h.governanceConfigResponse(r.Context(), workspaceID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to read knowledge governance config")
+		return
+	}
+	writeJSON(w, http.StatusOK, response)
+}
+
+// UpdateKnowledgeGovernanceConfig saves only governance controls. It never
+// writes retrospective_config, so the two schedule planes cannot silently
+// change one another's executor or enabled state.
+func (h *Handler) UpdateKnowledgeGovernanceConfig(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Enabled  *bool   `json:"enabled"`
+		AgentID  *string `json:"agent_id"`
+		Cadence  *string `json:"cadence"`
+		Timezone *string `json:"timezone"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	workspaceID, ok := parseUUIDOrBadRequest(w, h.resolveWorkspaceID(r), "workspace id")
+	if !ok {
+		return
+	}
+	tx, err := h.TxStarter.Begin(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to start knowledge governance config update")
+		return
+	}
+	defer tx.Rollback(r.Context()) //nolint:errcheck
+	// The workspace row serializes first-time inserts as well as updates to an
+	// existing config row. Holding both locks until audit insertion commits
+	// makes version allocation and its immutable audit record one operation.
+	var lockedWorkspace pgtype.UUID
+	if err := tx.QueryRow(r.Context(), `SELECT id FROM workspace WHERE id = $1 FOR UPDATE`, workspaceID).Scan(&lockedWorkspace); err != nil {
+		writeError(w, http.StatusNotFound, "workspace not found")
+		return
+	}
+	var current knowledgeGovernanceConfigRow
+	err = tx.QueryRow(r.Context(), `
+SELECT enabled, agent_id, cadence, timezone, version, next_eligible_at, updated_by, updated_at
+FROM knowledge_governance_config WHERE workspace_id = $1 FOR UPDATE`, workspaceID).Scan(
+		&current.Enabled, &current.AgentID, &current.Cadence, &current.Timezone, &current.Version, &current.NextEligibleAt, &current.UpdatedBy, &current.UpdatedAt,
+	)
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		writeError(w, http.StatusInternalServerError, "failed to read knowledge governance config")
+		return
+	}
+	if errors.Is(err, pgx.ErrNoRows) {
+		current = knowledgeGovernanceConfigRow{Cadence: "daily", Timezone: "UTC"}
+	}
+	enabled, agentID, cadence, timezone := current.Enabled, current.AgentID, current.Cadence, current.Timezone
+	if req.Enabled != nil {
+		enabled = *req.Enabled
+	}
+	if req.Cadence != nil {
+		cadence = *req.Cadence
+	}
+	if cadence != "daily" && cadence != "weekly" && cadence != "monthly" {
+		writeError(w, http.StatusBadRequest, "cadence must be daily, weekly, or monthly")
+		return
+	}
+	if req.Timezone != nil {
+		timezone = *req.Timezone
+	}
+	if _, err := time.LoadLocation(timezone); err != nil {
+		writeError(w, http.StatusBadRequest, "timezone must be a valid IANA timezone")
+		return
+	}
+	if req.AgentID != nil {
+		if *req.AgentID == "" {
+			agentID = pgtype.UUID{}
+		} else {
+			parsed, parseErr := util.ParseUUID(*req.AgentID)
+			if parseErr != nil {
+				writeError(w, http.StatusBadRequest, "agent_id is not a valid UUID")
+				return
+			}
+			agent, agentErr := h.Queries.GetAgent(r.Context(), parsed)
+			if agentErr != nil || uuidToString(agent.WorkspaceID) != uuidToString(workspaceID) {
+				writeError(w, http.StatusBadRequest, "agent not found in this workspace")
+				return
+			}
+			if agent.ArchivedAt.Valid || !agent.RuntimeID.Valid {
+				writeError(w, http.StatusBadRequest, "agent is not runnable")
+				return
+			}
+			agentID = parsed
+		}
+	}
+	if enabled && !agentID.Valid {
+		writeError(w, http.StatusBadRequest, "enabling knowledge governance requires a selected agent")
+		return
+	}
+	plannedAt, planErr := knowledgegovernance.NextSchedule(h.now(), cadence, timezone)
+	if planErr != nil {
+		writeError(w, http.StatusBadRequest, "unable to plan the next governance schedule")
+		return
+	}
+	actorID, actorErr := util.ParseUUID(requestUserID(r))
+	if actorErr != nil {
+		writeError(w, http.StatusBadRequest, "invalid user id")
+		return
+	}
+	before, _ := json.Marshal(map[string]any{"enabled": current.Enabled, "agent_id": uuidToString(current.AgentID), "cadence": current.Cadence, "timezone": current.Timezone, "next_eligible_at": current.NextEligibleAt.Time.UTC().Format(httpTimeFormat)})
+	after, _ := json.Marshal(map[string]any{"enabled": enabled, "agent_id": uuidToString(agentID), "cadence": cadence, "timezone": timezone, "next_eligible_at": plannedAt.UTC().Format(httpTimeFormat)})
+	version := current.Version + 1
+	if version < 1 {
+		version = 1
+	}
+	_, err = tx.Exec(r.Context(), `
+INSERT INTO knowledge_governance_config (workspace_id, enabled, agent_id, cadence, timezone, version, next_eligible_at, updated_by)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+ON CONFLICT (workspace_id) DO UPDATE SET
+  enabled = EXCLUDED.enabled, agent_id = EXCLUDED.agent_id, cadence = EXCLUDED.cadence,
+  timezone = EXCLUDED.timezone, version = EXCLUDED.version, next_eligible_at = EXCLUDED.next_eligible_at, updated_by = EXCLUDED.updated_by, updated_at = now()`,
+		workspaceID, enabled, agentID, cadence, timezone, version, plannedAt, actorID)
+	if err == nil {
+		_, err = tx.Exec(r.Context(), `
+INSERT INTO knowledge_governance_config_audit (workspace_id, config_version, actor_id, before_value, after_value)
+VALUES ($1, $2, $3, $4::jsonb, $5::jsonb)`, workspaceID, version, actorID, before, after)
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to save knowledge governance config")
+		return
+	}
+	if err := tx.Commit(r.Context()); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to commit knowledge governance config")
+		return
+	}
+	response, err := h.governanceConfigResponse(r.Context(), workspaceID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to read saved knowledge governance config")
+		return
+	}
+	writeJSON(w, http.StatusOK, response)
+}
+
 func (h *Handler) StartKnowledgeGovernanceRun(w http.ResponseWriter, r *http.Request) {
 	if h.KnowledgeGovernanceRunner == nil {
 		writeError(w, http.StatusInternalServerError, "knowledge governance runner is not wired")

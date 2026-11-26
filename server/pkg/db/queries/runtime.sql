@@ -62,6 +62,17 @@ FROM agent_runtime r
 LEFT JOIN agent_task_queue t
   ON t.runtime_id = r.id
  AND t.status IN ('dispatched', 'running', 'waiting_local_directory')
+ -- A disabled Quiz run is permitted to drain for collection but must never
+ -- consume capacity needed by ordinary work after the control-plane disable.
+ AND NOT (
+     t.originator_source = 'quiz'
+     AND COALESCE((
+         SELECT c.enabled FROM prompt_quiz_schedule_control c
+         JOIN agent a ON a.workspace_id = c.workspace_id
+         WHERE a.id = t.agent_id AND (c.agent_id IS NULL OR c.agent_id = a.id)
+         ORDER BY c.agent_id NULLS LAST LIMIT 1
+     ), TRUE) = FALSE
+ )
 WHERE r.id = @runtime_id
 GROUP BY r.id;
 
@@ -503,9 +514,21 @@ DELETE FROM agent_runtime WHERE id = $1;
 
 -- name: DeleteSystemAgentsByRuntime :exec
 -- System agents are invisible execution infrastructure (for example the Agent
--- Builder). Remove them before deleting their runtime so the RESTRICT runtime
--- FK cannot block an otherwise dependency-free delete.
-DELETE FROM agent WHERE runtime_id = $1 AND kind = 'system';
+-- Builder). Remove scope children, marker and audit before the carrier so the
+-- no-FK Quiz-scope lifecycle remains explicit.
+WITH targets AS (
+    SELECT id FROM agent WHERE runtime_id = $1 AND kind = 'system'
+),
+deleted_scope_items AS (
+    DELETE FROM prompt_quiz_agent_scope_item WHERE agent_id IN (SELECT id FROM targets)
+),
+deleted_scope_audit AS (
+    DELETE FROM prompt_quiz_agent_scope_audit WHERE agent_id IN (SELECT id FROM targets)
+),
+deleted_scopes AS (
+    DELETE FROM prompt_quiz_agent_scope WHERE agent_id IN (SELECT id FROM targets)
+)
+DELETE FROM agent WHERE id IN (SELECT id FROM targets);
 
 -- name: UpsertRuntimeCredential :one
 -- RUYI-425 §4.5: stores a runtime instance credential in the server-side

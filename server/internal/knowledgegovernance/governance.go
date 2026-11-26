@@ -84,7 +84,7 @@ func PromptFromContext(raw []byte) (string, bool) {
 Output contract:
 {
   "findings":[{
-    "entry_id":"UUID","key":"exact key","original_content":"exact content","content_version":1,"content_sha256":"exact SHA","scope":"scope","verdict":"valid|revised|deprecated|superseded|duplicate|invalid|needs_review","problem_categories":["obsolete_operation"],"counter_evidence":[{"source_type":"owner_correction|issue|pull_request|code|runtime_record","immutable_ref":"immutable URL, SHA, or identifier","observed_at":"RFC3339","excerpt":"relevant evidence excerpt"}],"applicable_scope":"where this conclusion applies","replacement_entry_id":"UUID or empty","recommendation":"specific non-binding next step","writeback_authorized":false,"lifecycle_event_ref":"existing lifecycle event id or empty"
+    "entry_id":"UUID","key":"exact key","original_content":"exact content","content_version":1,"content_sha256":"exact SHA","scope":"scope","verdict":"valid|revised|deprecated|superseded|duplicate|invalid|needs_review","problem_categories":["obsolete_operation"],"counter_evidence":[{"source_type":"owner_correction|issue|pull_request|code|runtime_record","immutable_ref":"immutable URL, SHA, or identifier","observed_at":"RFC3339","excerpt":"relevant evidence excerpt"}],"applicable_scope":"where this conclusion applies","replacement_entry_id":"UUID or empty","recommendation":"specific non-binding next step","proposed_content":"complete replacement content for revised; empty for non-revised","writeback_authorized":false,"lifecycle_event_ref":"existing lifecycle event id or empty"
   }],
   "retained_coverage":[{"entry_id":"UUID of every valid entry","coverage_evidence":{"source_type":"code","immutable_ref":"...","observed_at":"RFC3339","excerpt":"why this remains covered"},"sampled_counterevidence":{"source_type":"issue","immutable_ref":"...","observed_at":"RFC3339","excerpt":"a sampled attempt to refute it"}}],
   "retrieval_regressions":[{"entry_id":"UUID","expected":"expected recall outcome","observed":"actual result when tested","passed":false,"not_run_reason":"required when no authorized writeback occurred"}],
@@ -114,6 +114,7 @@ type Finding struct {
 	ApplicableScope     string     `json:"applicable_scope"`
 	ReplacementEntryID  string     `json:"replacement_entry_id"`
 	Recommendation      string     `json:"recommendation"`
+	ProposedContent     string     `json:"proposed_content"`
 	WritebackAuthorized bool       `json:"writeback_authorized"`
 	LifecycleEventRef   string     `json:"lifecycle_event_ref"`
 }
@@ -171,21 +172,96 @@ type RunStats struct {
 	Status string `json:"status"`
 }
 
-// ScheduleTarget identifies one directory and the stable workspace manager
-// whose identity makes the system-initiated task accountable and auditable.
+// ScheduleTarget identifies one directory, its configured execution agent, and
+// the stable workspace manager whose identity remains accountable for a
+// system-initiated task.
 type ScheduleTarget struct {
-	WorkspaceID string
-	DirID       string
-	ActorID     string
+	WorkspaceID    string
+	DirID          string
+	ActorID        string
+	Cadence        string
+	Timezone       string
+	ConfigVersion  int32
+	ScheduleBucket string
+	EvaluatedAt    time.Time
 }
 
-// ListScheduleTargets returns live mirrored directories with at least one
-// entry. Directories without a current owner or admin are excluded by the SQL
-// join because their system tasks would have no accountable user.
+// NextSchedule returns the first local schedule boundary strictly after now.
+// It is used when a configuration version is saved and the resulting value is
+// persisted as its eligibility anchor. Go's location rules make skipped and
+// repeated DST wall-clock times deterministic; all boundaries are local
+// midnight, with ISO weeks beginning Monday and calendar months beginning on
+// the first day.
+func NextSchedule(now time.Time, cadence, timezone string) (time.Time, error) {
+	loc, err := time.LoadLocation(timezone)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("invalid timezone %q: %w", timezone, err)
+	}
+	local := now.In(loc)
+	switch cadence {
+	case "daily":
+		return time.Date(local.Year(), local.Month(), local.Day()+1, 0, 0, 0, 0, loc), nil
+	case "weekly":
+		days := (int(time.Monday) - int(local.Weekday()) + 7) % 7
+		if days == 0 {
+			days = 7
+		}
+		return time.Date(local.Year(), local.Month(), local.Day()+days, 0, 0, 0, 0, loc), nil
+	case "monthly":
+		return time.Date(local.Year(), local.Month()+1, 1, 0, 0, 0, 0, loc), nil
+	default:
+		return time.Time{}, fmt.Errorf("invalid cadence %q", cadence)
+	}
+}
+
+// DisplayNextSchedule returns the next strictly future boundary for an
+// established configuration, while preserving the persisted initial
+// eligibility anchor until that first run window arrives. This deliberately
+// differs from eligibility: after the initial window is due, scheduling may
+// claim the current bucket, while the UI correctly advertises the following
+// calendar boundary instead of a stale past timestamp.
+func DisplayNextSchedule(now time.Time, cadence, timezone string, initialEligibility time.Time) (time.Time, error) {
+	if initialEligibility.After(now) {
+		return initialEligibility, nil
+	}
+	return NextSchedule(now, cadence, timezone)
+}
+
+// scheduleBucket is the durable, local-time execution window. ISO weeks start
+// on Monday; month buckets naturally choose the first local calendar day. A
+// persisted bucket means restarts and repeated scheduler leases never replay a
+// completed window.
+func scheduleBucket(now time.Time, cadence, timezone string) (string, error) {
+	loc, err := time.LoadLocation(timezone)
+	if err != nil {
+		return "", fmt.Errorf("invalid timezone %q: %w", timezone, err)
+	}
+	local := now.In(loc)
+	switch cadence {
+	case "daily":
+		return local.Format("2006-01-02"), nil
+	case "weekly":
+		year, week := local.ISOWeek()
+		return fmt.Sprintf("%04d-W%02d", year, week), nil
+	case "monthly":
+		return local.Format("2006-01"), nil
+	default:
+		return "", fmt.Errorf("invalid cadence %q", cadence)
+	}
+}
+
+// ListScheduleTargets returns enabled configuration rows with a current local
+// schedule bucket. Claiming happens inside RunScheduledWorkspace's enqueue
+// transaction; list reads are intentionally not themselves a concurrency gate.
 func (r *Runner) ListScheduleTargets(ctx context.Context) ([]ScheduleTarget, error) {
+	now := r.now()
 	rows, err := r.DB.Query(ctx, `
-SELECT d.workspace_id, d.id AS dir_id, manager.user_id AS actor_id
+SELECT d.workspace_id, d.id AS dir_id, manager.user_id AS actor_id, c.cadence, c.timezone, c.version
 FROM knowledge_dir d
+JOIN knowledge_governance_config c
+  ON c.workspace_id = d.workspace_id AND c.enabled = TRUE
+JOIN agent a ON a.id = c.agent_id
+  AND a.workspace_id = d.workspace_id AND a.archived_at IS NULL AND a.runtime_id IS NOT NULL
 JOIN LATERAL (
     SELECT user_id
     FROM member
@@ -194,8 +270,9 @@ JOIN LATERAL (
     LIMIT 1
 ) manager ON TRUE
 WHERE d.removed = FALSE
+  AND c.next_eligible_at <= $1
   AND EXISTS (SELECT 1 FROM knowledge_entry e WHERE e.dir_id = d.id)
-ORDER BY d.workspace_id ASC, d.created_at ASC, d.id ASC`)
+ORDER BY d.workspace_id ASC, d.created_at ASC, d.id ASC`, now)
 	if err != nil {
 		return nil, fmt.Errorf("knowledge governance: list schedule targets: %w", err)
 	}
@@ -203,14 +280,20 @@ ORDER BY d.workspace_id ASC, d.created_at ASC, d.id ASC`)
 	targets := []ScheduleTarget{}
 	for rows.Next() {
 		var workspaceID, dirID, actorID pgtype.UUID
-		if err := rows.Scan(&workspaceID, &dirID, &actorID); err != nil {
+		var target ScheduleTarget
+		if err := rows.Scan(&workspaceID, &dirID, &actorID, &target.Cadence, &target.Timezone, &target.ConfigVersion); err != nil {
 			return nil, fmt.Errorf("knowledge governance: scan schedule target: %w", err)
 		}
-		targets = append(targets, ScheduleTarget{
-			WorkspaceID: util.UUIDToString(workspaceID),
-			DirID:       util.UUIDToString(dirID),
-			ActorID:     util.UUIDToString(actorID),
-		})
+		bucket, bucketErr := scheduleBucket(now, target.Cadence, target.Timezone)
+		if bucketErr != nil {
+			return nil, fmt.Errorf("knowledge governance: schedule target: %w", bucketErr)
+		}
+		target.ScheduleBucket = bucket
+		target.EvaluatedAt = now
+		target.WorkspaceID = util.UUIDToString(workspaceID)
+		target.DirID = util.UUIDToString(dirID)
+		target.ActorID = util.UUIDToString(actorID)
+		targets = append(targets, target)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("knowledge governance: iterate schedule targets: %w", err)
@@ -294,7 +377,22 @@ WHERE status = 'running'
 	return terminalResult.RowsAffected() + unenqueuedResult.RowsAffected() + replayed, nil
 }
 
+// ErrScheduleClaimed means an earlier scheduler lease already committed this
+// directory/config/bucket. It is intentionally a no-op rather than a retry.
+var ErrScheduleClaimed = errors.New("knowledge governance: schedule bucket already claimed")
+
+// RunScheduledWorkspace creates one claimed scheduled run. Its claim and task
+// enqueue share one transaction, so another directory's failure cannot cause a
+// successful directory to replay on the next scheduler sweep.
+func (r *Runner) RunScheduledWorkspace(ctx context.Context, target ScheduleTarget) (*RunStats, error) {
+	return r.runWorkspace(ctx, target.WorkspaceID, target.DirID, target.ActorID, "schedule", &target)
+}
+
 func (r *Runner) RunWorkspace(ctx context.Context, workspaceID, dirID, actorID, trigger string) (*RunStats, error) {
+	return r.runWorkspace(ctx, workspaceID, dirID, actorID, trigger, nil)
+}
+
+func (r *Runner) runWorkspace(ctx context.Context, workspaceID, dirID, actorID, trigger string, scheduled *ScheduleTarget) (*RunStats, error) {
 	// A governance run becomes durable once creation starts. Continue the bounded
 	// setup if the initiating HTTP request disconnects so no running row is left
 	// without a task merely because its caller went away.
@@ -340,17 +438,43 @@ WHERE id = $1 AND workspace_id = $2 AND removed = FALSE`, dir, ws).Scan(&scope);
 		return nil, fmt.Errorf("knowledge governance: scope: %w", err)
 	}
 	var agentID, runtimeID pgtype.UUID
-	err = tx.QueryRow(runCtx, `
+	if scheduled == nil {
+		err = tx.QueryRow(runCtx, `
 SELECT a.id, a.runtime_id
-FROM retrospective_config c
+FROM knowledge_governance_config c
 JOIN agent a ON a.id = c.agent_id
 WHERE c.workspace_id = $1 AND c.enabled = TRUE
-  AND a.workspace_id = $1 AND a.archived_at IS NULL AND a.runtime_id IS NOT NULL`, ws).Scan(&agentID, &runtimeID)
+  AND a.workspace_id = $1 AND a.archived_at IS NULL AND a.runtime_id IS NOT NULL
+FOR KEY SHARE OF c`, ws).Scan(&agentID, &runtimeID)
+	} else {
+		err = tx.QueryRow(runCtx, `
+SELECT a.id, a.runtime_id
+FROM knowledge_governance_config c
+JOIN agent a ON a.id = c.agent_id
+WHERE c.workspace_id = $1 AND c.version = $2 AND c.enabled = TRUE
+  AND c.next_eligible_at <= $3
+  AND a.workspace_id = $1 AND a.archived_at IS NULL AND a.runtime_id IS NOT NULL
+FOR KEY SHARE OF c`, ws, scheduled.ConfigVersion, scheduled.EvaluatedAt).Scan(&agentID, &runtimeID)
+	}
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNoExecutor
 	}
 	if err != nil {
 		return nil, fmt.Errorf("knowledge governance: execution agent: %w", err)
+	}
+	if scheduled != nil {
+		var claimID pgtype.UUID
+		err = tx.QueryRow(runCtx, `
+INSERT INTO knowledge_governance_schedule_claim (workspace_id, dir_id, config_version, schedule_bucket)
+VALUES ($1, $2, $3, $4)
+ON CONFLICT (workspace_id, dir_id, config_version, schedule_bucket) DO NOTHING
+RETURNING id`, ws, dir, scheduled.ConfigVersion, scheduled.ScheduleBucket).Scan(&claimID)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, ErrScheduleClaimed
+		}
+		if err != nil {
+			return nil, fmt.Errorf("knowledge governance: claim schedule bucket: %w", err)
+		}
 	}
 
 	now := r.now()
@@ -412,9 +536,14 @@ WHERE id = $2 AND workspace_id = $3 AND status = 'running'`, tc, runID, ws); err
 func (r *Runner) entrySnapshot(ctx context.Context, q db.DBTX, workspaceID, dirID pgtype.UUID) ([]EntrySnapshot, error) {
 	rows, err := q.Query(ctx, `
 SELECT id, key, content, content_sha256, current_version, lifecycle_state
-FROM knowledge_entry
-WHERE workspace_id = $1 AND dir_id = $2
-ORDER BY key`, workspaceID, dirID)
+FROM knowledge_entry e
+WHERE e.workspace_id = $1 AND e.dir_id = $2
+  AND NOT EXISTS (
+    SELECT 1 FROM knowledge_governance_opinion o
+    WHERE o.workspace_id = e.workspace_id AND o.entry_id = e.id
+      AND o.status IN ('pending', 'approved', 'applying')
+  )
+ORDER BY e.key`, workspaceID, dirID)
 	if err != nil {
 		return nil, err
 	}
@@ -516,6 +645,12 @@ func ParseRunOutput(raw string, tc TaskContext) (RunOutput, error) {
 				return RunOutput{}, fmt.Errorf("knowledge governance: finding %s evidence: %w", finding.EntryID, err)
 			}
 		}
+		if finding.Verdict == "revised" && strings.TrimSpace(finding.ProposedContent) == "" {
+			return RunOutput{}, errors.New("knowledge governance: revised finding must include proposed_content")
+		}
+		if finding.Verdict != "revised" && strings.TrimSpace(finding.ProposedContent) != "" {
+			return RunOutput{}, errors.New("knowledge governance: only revised findings may include proposed_content")
+		}
 		if finding.Verdict == "valid" {
 			valid[finding.EntryID] = true
 		}
@@ -596,16 +731,33 @@ func (r *Runner) persistReport(ctx context.Context, runID, workspaceID pgtype.UU
 			}
 			replacement = parsed
 		}
-		if _, err := tx.Exec(ctx, `
+		var findingID pgtype.UUID
+		if err := tx.QueryRow(ctx, `
 INSERT INTO knowledge_governance_finding (
  run_id, workspace_id, entry_id, entry_key, original_content, content_version, content_sha256, scope,
  verdict, problem_categories, counter_evidence, applicable_scope, replacement_entry_id, recommendation,
  writeback_authorized, lifecycle_event_ref
-) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb,$11::jsonb,$12,$13,$14,FALSE,$15)`,
+) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb,$11::jsonb,$12,$13,$14,FALSE,$15)
+RETURNING id`,
 			runID, workspaceID, util.MustParseUUID(finding.EntryID), finding.Key, finding.OriginalContent,
 			finding.ContentVersion, finding.ContentSHA256, finding.Scope, finding.Verdict, categories, evidence,
-			finding.ApplicableScope, replacement, finding.Recommendation, finding.LifecycleEventRef); err != nil {
+			finding.ApplicableScope, replacement, finding.Recommendation, finding.LifecycleEventRef).Scan(&findingID); err != nil {
 			return false, err
+		}
+		if finding.Verdict == "revised" || finding.Verdict == "deprecated" {
+			action := "delete"
+			if finding.Verdict == "revised" {
+				action = "revise"
+			}
+			_, err := tx.Exec(ctx, `
+INSERT INTO knowledge_governance_opinion (
+ workspace_id, dir_id, entry_id, run_id, finding_id, action, proposed_content, target_version, target_content_sha256
+) SELECT $1, dir_id, $2, $3, $4, $5, $6, $7, $8 FROM knowledge_entry WHERE id = $2 AND workspace_id = $1
+ON CONFLICT (workspace_id, entry_id) WHERE status IN ('pending', 'approved', 'applying') DO NOTHING`,
+				workspaceID, util.MustParseUUID(finding.EntryID), runID, findingID, action, finding.ProposedContent, finding.ContentVersion, finding.ContentSHA256)
+			if err != nil {
+				return false, err
+			}
 		}
 	}
 	payload := map[string]any{

@@ -1,0 +1,1 @@
+DROP INDEX CONCURRENTLY IF EXISTS idx_knowledge_governance_opinion_active_entry;

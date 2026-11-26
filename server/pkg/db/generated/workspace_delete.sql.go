@@ -531,6 +531,18 @@ deleted_prompt_quality_daily AS (
 deleted_prompt_perplexity_scores AS (
     DELETE FROM prompt_perplexity_score WHERE workspace_id = $1
 ),
+-- Quiz range controls have no foreign keys by repository policy. Delete child
+-- rows, marker and audit explicitly before the workspace's agents/items.
+deleted_prompt_quiz_scope_items AS (
+    DELETE FROM prompt_quiz_agent_scope_item
+    WHERE agent_id IN (SELECT id FROM agent WHERE workspace_id = $1)
+),
+deleted_prompt_quiz_scope_audit AS (
+    DELETE FROM prompt_quiz_agent_scope_audit WHERE workspace_id = $1
+),
+deleted_prompt_quiz_scopes AS (
+    DELETE FROM prompt_quiz_agent_scope WHERE workspace_id = $1
+),
 deleted_prompt_quiz_results AS (
     DELETE FROM prompt_quiz_result WHERE workspace_id = $1
 ),
@@ -787,6 +799,15 @@ deleted_retrospective_watermarks AS (
 deleted_retrospective_configs AS (
     DELETE FROM retrospective_config WHERE retrospective_config.workspace_id = $1
 ),
+deleted_knowledge_governance_config_audit AS (
+    DELETE FROM knowledge_governance_config_audit WHERE knowledge_governance_config_audit.workspace_id = $1
+),
+deleted_knowledge_governance_schedule_claims AS (
+    DELETE FROM knowledge_governance_schedule_claim WHERE knowledge_governance_schedule_claim.workspace_id = $1
+),
+deleted_knowledge_governance_configs AS (
+    DELETE FROM knowledge_governance_config WHERE knowledge_governance_config.workspace_id = $1
+),
 deleted_model_configs AS (
     DELETE FROM self_evolution_model_config WHERE self_evolution_model_config.workspace_id = $1
 ),
@@ -795,6 +816,9 @@ deleted_jev_configs AS (
 ),
 deleted_knowledge_operations AS (
     DELETE FROM knowledge_entry_operation WHERE knowledge_entry_operation.workspace_id = $1
+),
+deleted_knowledge_governance_opinions AS (
+    DELETE FROM knowledge_governance_opinion WHERE knowledge_governance_opinion.workspace_id = $1
 ),
 deleted_knowledge_governance_findings AS (
     DELETE FROM knowledge_governance_finding WHERE knowledge_governance_finding.workspace_id = $1

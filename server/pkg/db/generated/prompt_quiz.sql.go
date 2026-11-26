@@ -330,9 +330,19 @@ func (q *Queries) CreatePromptQuizTask(ctx context.Context, arg CreatePromptQuiz
 }
 
 const deletePromptQuizItem = `-- name: DeletePromptQuizItem :execrows
+WITH target AS MATERIALIZED (
+    SELECT id
+    FROM prompt_quiz_item
+    WHERE id = $1::uuid
+      AND workspace_id = $2::uuid
+    FOR UPDATE
+),
+deleted_scope_items AS (
+    DELETE FROM prompt_quiz_agent_scope_item
+    WHERE item_id IN (SELECT id FROM target)
+)
 DELETE FROM prompt_quiz_item
-WHERE id = $1::uuid
-  AND workspace_id = $2::uuid
+WHERE id IN (SELECT id FROM target)
 `
 
 type DeletePromptQuizItemParams struct {
@@ -506,12 +516,24 @@ FROM prompt_quiz_item
 WHERE workspace_id = $1::uuid
   AND active
   AND runtime_profile = $2::text
+  AND (
+      NOT EXISTS (
+          SELECT 1 FROM prompt_quiz_agent_scope s
+          WHERE s.agent_id = $3::uuid
+      )
+      OR EXISTS (
+          SELECT 1 FROM prompt_quiz_agent_scope_item si
+          WHERE si.agent_id = $3::uuid
+            AND si.item_id = prompt_quiz_item.id
+      )
+  )
 ORDER BY id
 `
 
 type ListActivePromptQuizItemsForProfileParams struct {
 	WorkspaceID    pgtype.UUID `json:"workspace_id"`
 	RuntimeProfile string      `json:"runtime_profile"`
+	AgentID        pgtype.UUID `json:"agent_id"`
 }
 
 type ListActivePromptQuizItemsForProfileRow struct {
@@ -536,7 +558,7 @@ type ListActivePromptQuizItemsForProfileRow struct {
 // through, so the task payload it builds CANNOT carry the private half — there is
 // no field on the row to read it from.
 func (q *Queries) ListActivePromptQuizItemsForProfile(ctx context.Context, arg ListActivePromptQuizItemsForProfileParams) ([]ListActivePromptQuizItemsForProfileRow, error) {
-	rows, err := q.db.Query(ctx, listActivePromptQuizItemsForProfile, arg.WorkspaceID, arg.RuntimeProfile)
+	rows, err := q.db.Query(ctx, listActivePromptQuizItemsForProfile, arg.WorkspaceID, arg.RuntimeProfile, arg.AgentID)
 	if err != nil {
 		return nil, err
 	}

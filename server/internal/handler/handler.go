@@ -282,6 +282,9 @@ type Handler struct {
 	// layer. Every fault degrades to a stored skip report — the fail-closed
 	// gate semantics never depend on this client.
 	JevAdvisory *legislation.AdvisoryClient
+	// Now is injectable for handlers that persist schedule anchors. Nil uses
+	// wall-clock time in production.
+	Now func() time.Time
 	// JevConfig resolves the workspace-owned JEV advisory endpoint.
 	// It is nil when the deployment encryption key is absent; the config API
 	// then reports that saves are unavailable rather than storing a plaintext

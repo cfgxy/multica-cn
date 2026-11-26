@@ -89,6 +89,7 @@ func registerKnowledgeDir(t *testing.T, kind, path string) string {
 	t.Cleanup(func() {
 		ctx := context.Background()
 		testPool.Exec(ctx, `DELETE FROM agent_task_queue WHERE id IN (SELECT task_id FROM knowledge_governance_run WHERE dir_id = ANY($1::uuid[]))`, ids)
+		testPool.Exec(ctx, `DELETE FROM knowledge_governance_opinion WHERE dir_id = ANY($1::uuid[])`, ids)
 		testPool.Exec(ctx, `DELETE FROM knowledge_governance_finding WHERE run_id IN (SELECT id FROM knowledge_governance_run WHERE dir_id = ANY($1::uuid[]))`, ids)
 		testPool.Exec(ctx, `DELETE FROM knowledge_governance_run WHERE dir_id = ANY($1::uuid[])`, ids)
 		testPool.Exec(ctx, `DELETE FROM knowledge_lifecycle_event WHERE entry_id IN (SELECT id FROM knowledge_entry WHERE dir_id = ANY($1::uuid[]))`, ids)
@@ -223,12 +224,13 @@ func TestKnowledgeGovernanceRunWaitsForWorkspaceDeleteFence(t *testing.T) {
 	dirID := registerKnowledgeDir(t, "candidate_cli", t.TempDir())
 	var agentID string
 	dbfx.QueryRow(t, `SELECT id::text FROM agent WHERE workspace_id = $1 ORDER BY created_at LIMIT 1`, testWorkspaceID).Scan(&agentID)
-	dbfx.InsertNoID(t, "retrospective_config", testutil.Cols{
-		"workspace_id":      testWorkspaceID,
-		"enabled":           true,
-		"include_in_review": false,
-		"window_days":       7,
-		"agent_id":          agentID,
+	dbfx.InsertNoID(t, "knowledge_governance_config", testutil.Cols{
+		"workspace_id": testWorkspaceID,
+		"enabled":      true,
+		"agent_id":     agentID,
+		"cadence":      "daily",
+		"timezone":     "UTC",
+		"next_eligible_at": time.Now().UTC(),
 	}, "workspace_id = $1", testWorkspaceID)
 
 	runner := &knowledgegovernance.Runner{
@@ -313,18 +315,18 @@ func TestKnowledgeGovernancePersistReportFailureFinishesRun(t *testing.T) {
 	var previousAgentID *string
 	var previousEnabled bool
 	err := testPool.QueryRow(ctx, `
-		SELECT agent_id::text, enabled FROM retrospective_config
+		SELECT agent_id::text, enabled FROM knowledge_governance_config
 		WHERE workspace_id = $1`, testWorkspaceID).Scan(&previousAgentID, &previousEnabled)
 	if errors.Is(err, pgx.ErrNoRows) {
-		dbfx.InsertNoID(t, "retrospective_config", testutil.Cols{
-			"workspace_id": testWorkspaceID, "enabled": true, "include_in_review": false, "window_days": 7, "agent_id": agentID,
+		dbfx.InsertNoID(t, "knowledge_governance_config", testutil.Cols{
+			"workspace_id": testWorkspaceID, "enabled": true, "agent_id": agentID, "cadence": "daily", "timezone": "UTC", "next_eligible_at": time.Now().UTC(),
 		}, "workspace_id = $1", testWorkspaceID)
 	} else if err != nil {
 		t.Fatalf("read governance execution config: %v", err)
 	} else {
-		dbfx.Exec(t, `UPDATE retrospective_config SET agent_id = $2, enabled = TRUE WHERE workspace_id = $1`, testWorkspaceID, agentID)
+		dbfx.Exec(t, `UPDATE knowledge_governance_config SET agent_id = $2, enabled = TRUE WHERE workspace_id = $1`, testWorkspaceID, agentID)
 		t.Cleanup(func() {
-			testPool.Exec(ctx, `UPDATE retrospective_config SET agent_id = $2, enabled = $3 WHERE workspace_id = $1`, testWorkspaceID, previousAgentID, previousEnabled)
+			testPool.Exec(ctx, `UPDATE knowledge_governance_config SET agent_id = $2, enabled = $3 WHERE workspace_id = $1`, testWorkspaceID, previousAgentID, previousEnabled)
 		})
 	}
 
