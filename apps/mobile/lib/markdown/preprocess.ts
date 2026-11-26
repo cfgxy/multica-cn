@@ -133,9 +133,13 @@ function rewriteBodyReferences(input: string, workspacePrefix?: string | null): 
 //     out-of-band navigation.
 const ATTACHMENT_UUID =
   "[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}";
-const FILE_CARD_URL = `/uploads/[^)]*|https?://[^)]+|/api/attachments/${ATTACHMENT_UUID}/download`;
+const ATTACHMENT_PROTOCOL_SEGMENT = "(?:(?!\\.\\.(?:[/?#]|$))[^/\\s)?#]+)";
+const ATTACHMENT_PROTOCOL_URL =
+  `attachment:\\/\\/(?:\\.\\/)?${ATTACHMENT_PROTOCOL_SEGMENT}(?:\\/${ATTACHMENT_PROTOCOL_SEGMENT})*(?:[?#][^)\\s]*)?`;
+const FILE_CARD_URL = `/uploads/[^)]*|https?://[^)]+|/api/attachments/${ATTACHMENT_UUID}/download|${ATTACHMENT_PROTOCOL_URL}`;
 const FILE_LINE_RE = new RegExp(
   `^!file\\[((?:\\\\.|[^\\]\\\\])*)\\]\\((${FILE_CARD_URL})\\)$`,
+  "i",
 );
 
 // Unescape the file-card label back to the real filename (mirrors web's

@@ -554,7 +554,7 @@ func init() {
 	issueCreateCmd.Flags().String("due-date", "", "Due date (calendar day, YYYY-MM-DD)")
 	issueCreateCmd.Flags().Bool("allow-duplicate", false, "Allow creating an issue even when an active duplicate exists")
 	issueCreateCmd.Flags().String("output", "json", "Output format: table or json")
-	issueCreateCmd.Flags().StringSlice("attachment", nil, "File path(s) to attach (can be specified multiple times)")
+	issueCreateCmd.Flags().StringSlice("attachment", nil, "File path(s) to attach (can be specified multiple times). To embed inline in --description, write ![caption](attachment://<filename>) or !file[name](attachment://<filename>) alongside --attachment <path>; the CLI rewrites it to a durable URL after upload.")
 	issueCreateCmd.Flags().StringSlice("attachment-id", nil, "Existing attachment UUID(s) to bind to the created issue (can be specified multiple times)")
 
 	// issue update
@@ -633,7 +633,7 @@ func init() {
 	issueCommentAddCmd.Flags().String("content-file", "", "Read comment content from a UTF-8 file (preserves multi-line content verbatim; use this on Windows when stdin piping mangles non-ASCII bytes). The path must be inside the current working directory unless --allow-external-file is set.")
 	issueCommentAddCmd.Flags().Bool("allow-external-file", false, "Allow --content-file / --attachment to read a path outside the current working directory. Off by default so a stale file from another run/environment can't be picked up (MUL-4252).")
 	issueCommentAddCmd.Flags().String("parent", "", "Parent comment ID to reply under. A comment-triggered agent task must reply under its trigger comment; omitting --parent to post a top-level comment is rejected")
-	issueCommentAddCmd.Flags().StringSlice("attachment", nil, "File path(s) to attach (can be specified multiple times)")
+	issueCommentAddCmd.Flags().StringSlice("attachment", nil, "File path(s) to attach (can be specified multiple times). To embed inline in the comment body, write ![caption](attachment://<filename>) or !file[name](attachment://<filename>) alongside --attachment <path>; the CLI rewrites it to a durable URL after upload.")
 	issueCommentAddCmd.Flags().String("output", "json", "Output format: table or json")
 
 	// issue comment resolve/unresolve
@@ -1287,19 +1287,29 @@ func runIssueCreate(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 	attachmentIDs = appendUniqueStrings(attachmentIDs, envAttachmentIDs...)
-	if len(attachmentIDs) > 0 {
-		body["attachment_ids"] = attachmentIDs
-	}
-
-	// Pre-validate attachments BEFORE creating the issue so a bad path can
-	// never produce a half-created issue (which would otherwise trigger
-	// callers — especially the agent doing quick-create — to retry the whole
-	// `issue create` and end up with duplicates). URLs are warned+skipped, the
-	// workdir guard is applied, and every local path is read upfront; a failure
-	// here surfaces pre-create so the issue never lands.
+	// Pre-validate and upload attachments BEFORE creating the issue so a bad path
+	// or upload failure never produces a half-created issue, and so inline
+	// `attachment://<filename>` references in `--description` can be rewritten
+	// to the durable server URL before `POST /api/issues` persists the body.
 	pending, err := collectLocalAttachments(cmd, attachments)
 	if err != nil {
 		return err
+	}
+	var uploaded []uploadedAttachment
+	for _, att := range pending {
+		resp, uploadErr := client.UploadFile(ctx, att.data, att.path, "")
+		if uploadErr != nil {
+			return fmt.Errorf("upload attachment %s: %w", att.path, uploadErr)
+		}
+		attachmentIDs = appendUniqueStrings(attachmentIDs, resp.ID)
+		uploaded = append(uploaded, uploadedAttachment{localPath: att.path, resp: resp})
+		fmt.Fprintf(os.Stderr, "Uploaded %s\n", att.path)
+	}
+	if len(attachmentIDs) > 0 {
+		body["attachment_ids"] = attachmentIDs
+	}
+	if hasDesc && len(uploaded) > 0 {
+		body["description"] = rewriteUploadedAttachmentRefs(desc, uploaded)
 	}
 
 	var result map[string]any
@@ -1308,20 +1318,6 @@ func runIssueCreate(cmd *cobra.Command, _ []string) error {
 			return errors.New(msg)
 		}
 		return fmt.Errorf("create issue: %w", err)
-	}
-
-	// Upload attachments and link them to the newly created issue.
-	// Failures here are partial-success: the issue exists already, so
-	// turning a non-zero exit on the caller would invite a retry that
-	// duplicates the issue. Warn on stderr and continue.
-	issueID := strVal(result, "id")
-	for _, att := range pending {
-		if _, uploadErr := client.UploadFile(ctx, att.data, att.path, issueID); uploadErr != nil {
-			fmt.Fprintf(os.Stderr, "warning: upload attachment %s failed (issue already created, %s): %v\n",
-				att.path, strVal(result, "identifier"), uploadErr)
-			continue
-		}
-		fmt.Fprintf(os.Stderr, "Uploaded %s\n", att.path)
 	}
 
 	output, _ := cmd.Flags().GetString("output")
@@ -2114,13 +2110,18 @@ func runIssueCommentAdd(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	var attachmentIDs []string
+	var uploaded []uploadedAttachment
 	for _, att := range pending {
-		id, uploadErr := client.UploadFile(ctx, att.data, att.path, issueID)
+		resp, uploadErr := client.UploadFile(ctx, att.data, att.path, issueID)
 		if uploadErr != nil {
 			return fmt.Errorf("upload attachment %s: %w", att.path, uploadErr)
 		}
-		attachmentIDs = append(attachmentIDs, id)
+		attachmentIDs = append(attachmentIDs, resp.ID)
+		uploaded = append(uploaded, uploadedAttachment{localPath: att.path, resp: resp})
 		fmt.Fprintf(os.Stderr, "Uploaded %s\n", att.path)
+	}
+	if len(uploaded) > 0 {
+		content = rewriteUploadedAttachmentRefs(content, uploaded)
 	}
 
 	body := map[string]any{"content": content}

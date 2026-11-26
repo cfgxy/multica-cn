@@ -120,7 +120,7 @@ function createComponents(
             <div className="min-w-0 flex-1">
               <p className="truncate text-body">{filename}</p>
             </div>
-            {href && (
+            {href && !/^attachment:\/\//i.test(href) && (
               <button
                 type="button"
                 className="shrink-0 rounded-md p-1 text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground"
@@ -185,6 +185,10 @@ function createComponents(
             {children}
           </span>
         )
+      }
+
+      if (href && /^attachment:\/\//i.test(href)) {
+        return <span className="text-muted-foreground">{children}</span>
       }
 
       const handleClick = (e: React.MouseEvent): void => {

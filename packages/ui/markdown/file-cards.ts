@@ -22,6 +22,13 @@ const ATTACHMENT_DOWNLOAD_URL_SOURCE = `/api/attachments/${ATTACHMENT_UUID_SOURC
 const ATTACHMENT_DOWNLOAD_URL_RE = new RegExp(
   `^${ATTACHMENT_DOWNLOAD_URL_SOURCE}$`,
 )
+const ATTACHMENT_PROTOCOL_SEGMENT = '(?:(?!\\.\\.(?:[/?#]|$))[^/\\s)?#]+)'
+const ATTACHMENT_PROTOCOL_URL_SOURCE =
+  `attachment:\\/\\/(?:\\.\\/)?${ATTACHMENT_PROTOCOL_SEGMENT}(?:\\/${ATTACHMENT_PROTOCOL_SEGMENT})*(?:[?#][^)\\s]*)?`
+const ATTACHMENT_PROTOCOL_URL_RE = new RegExp(
+  `^${ATTACHMENT_PROTOCOL_URL_SOURCE}$`,
+  'i',
+)
 
 /**
  * URL alternation accepted inside `!file[name](url)` markdown.
@@ -29,6 +36,7 @@ const ATTACHMENT_DOWNLOAD_URL_RE = new RegExp(
  * Restricted to:
  * - `/uploads/...` site-relative paths (LocalStorage backend with no LOCAL_UPLOAD_BASE_URL)
  * - `/api/attachments/<UUID>/download` site-relative attachment downloads
+ * - `attachment://<id|filename>` internal attachment references
  * - `http(s)://...` absolute URLs (S3 / CloudFront / hosted)
  *
  * Anything else — `javascript:`, `data:`, protocol-relative `//host/x`, other
@@ -36,14 +44,15 @@ const ATTACHMENT_DOWNLOAD_URL_RE = new RegExp(
  * cannot be turned into an out-of-band navigation.
  */
 export const FILE_CARD_URL_PATTERN = new RegExp(
-  `/uploads/[^)]*|https?:\\/\\/[^)]+|${ATTACHMENT_DOWNLOAD_URL_SOURCE}`,
+  `/uploads/[^)]*|https?:\\/\\/[^)]+|${ATTACHMENT_DOWNLOAD_URL_SOURCE}|${ATTACHMENT_PROTOCOL_URL_SOURCE}`,
 )
 
 /** Prefix test applied by renderers to validate `data-href` before opening it. */
 export function isAllowedFileCardHref(href: string): boolean {
   return (
     /^(https?:\/\/|\/uploads\/)/i.test(href) ||
-    ATTACHMENT_DOWNLOAD_URL_RE.test(href)
+    ATTACHMENT_DOWNLOAD_URL_RE.test(href) ||
+    ATTACHMENT_PROTOCOL_URL_RE.test(href)
   )
 }
 

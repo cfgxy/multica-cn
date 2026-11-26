@@ -1008,6 +1008,15 @@ const CommentBody = memo(function CommentBody({
     onPressChange?.(entry.id, longPress.isPressed);
   }, [longPress.isPressed, entry.id, isSelecting, onPressChange]);
 
+  const mergedAttachments = useMemo(() => {
+    if (!attachments?.length) return entry.attachments;
+    if (!entry.attachments?.length) return attachments;
+    const ownIds = new Set(entry.attachments.map((a) => a.id));
+    const extra = attachments.filter((a) => !ownIds.has(a.id));
+    if (extra.length === 0) return entry.attachments;
+    return [...entry.attachments, ...extra];
+  }, [entry.attachments, attachments]);
+
   const body = (
     <View className="gap-2">
       <View className="flex-row items-center gap-2">
@@ -1041,7 +1050,7 @@ const CommentBody = memo(function CommentBody({
           >
             <SelectableMarkdown
               content={entry.content}
-              attachments={attachments}
+              attachments={mergedAttachments}
               selectable={isSelecting}
               renderReferenceTail
             />
@@ -1049,7 +1058,7 @@ const CommentBody = memo(function CommentBody({
         ) : (
           <SelectableMarkdown
             content={entry.content}
-            attachments={attachments}
+            attachments={mergedAttachments}
             selectable={isSelecting}
             renderReferenceTail={hasReferenceCandidate}
           />

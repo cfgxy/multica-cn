@@ -312,10 +312,17 @@ export type * from "./api";
 export type { Attachment } from "./attachment";
 export {
   attachmentDownloadPath,
+  attachmentFilenameBasename,
   attachmentIdFromDownloadURL,
+  attachmentMatchesProtocolURL,
   contentReferencesAttachment,
+  isAttachmentProtocolURL,
+  maskMarkdownCode,
+  normalizeAttachmentFilename,
+  parseAttachmentProtocolTarget,
   stripChannelMediaMarkers,
 } from "./attachment-url";
+export type { ParsedAttachmentProtocolTarget } from "./attachment-url";
 export type {
   ChatSession,
   ChatLastMessage,
