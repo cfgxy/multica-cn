@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/multica-ai/multica/server/internal/knowledgegovernance"
 	"github.com/multica-ai/multica/server/internal/testutil"
@@ -21,16 +22,17 @@ func TestKnowledgeGovernanceScheduleClaimsAreAtomicAndVersionScoped(t *testing.T
 	secondDir := registerKnowledgeDir(t, "candidate_cli", t.TempDir())
 	var agentID string
 	dbfx.QueryRow(t, `SELECT id::text FROM agent WHERE workspace_id = $1 ORDER BY created_at LIMIT 1`, testWorkspaceID).Scan(&agentID)
+	now := time.Now().UTC()
 	dbfx.InsertNoID(t, "knowledge_governance_config", testutil.Cols{
-		"workspace_id": testWorkspaceID, "enabled": true, "agent_id": agentID, "cadence": "daily", "timezone": "UTC", "version": 1,
+		"workspace_id": testWorkspaceID, "enabled": true, "agent_id": agentID, "cadence": "daily", "timezone": "UTC", "version": 1, "next_eligible_at": now.Add(-time.Minute),
 	}, "workspace_id = $1", testWorkspaceID)
 	t.Cleanup(func() {
 		testPool.Exec(ctx, `DELETE FROM knowledge_governance_schedule_claim WHERE workspace_id = $1`, testWorkspaceID)
 		testPool.Exec(ctx, `DELETE FROM knowledge_governance_config WHERE workspace_id = $1`, testWorkspaceID)
 	})
 
-	runner := &knowledgegovernance.Runner{DB: testPool, Queries: testHandler.Queries, Enqueue: testHandler.KnowledgeGovernanceTaskEnqueuer()}
-	first := knowledgegovernance.ScheduleTarget{WorkspaceID: testWorkspaceID, DirID: firstDir, ActorID: testUserID, Cadence: "daily", Timezone: "UTC", ConfigVersion: 1, ScheduleBucket: "2026-11-26"}
+	runner := &knowledgegovernance.Runner{DB: testPool, Queries: testHandler.Queries, Enqueue: testHandler.KnowledgeGovernanceTaskEnqueuer(), Now: func() time.Time { return now }}
+	first := knowledgegovernance.ScheduleTarget{WorkspaceID: testWorkspaceID, DirID: firstDir, ActorID: testUserID, Cadence: "daily", Timezone: "UTC", ConfigVersion: 1, ScheduleBucket: "2026-11-26", EvaluatedAt: now}
 	if _, err := runner.RunScheduledWorkspace(ctx, first); err != nil {
 		t.Fatalf("first scheduled run: %v", err)
 	}
@@ -40,7 +42,7 @@ func TestKnowledgeGovernanceScheduleClaimsAreAtomicAndVersionScoped(t *testing.T
 
 	// End the first active run so version 2 can prove its fresh namespace.
 	dbfx.Exec(t, `UPDATE knowledge_governance_run SET status = 'cancelled', finished_at = now() WHERE workspace_id = $1 AND dir_id = $2`, testWorkspaceID, firstDir)
-	dbfx.Exec(t, `UPDATE knowledge_governance_config SET version = 2 WHERE workspace_id = $1`, testWorkspaceID)
+	dbfx.Exec(t, `UPDATE knowledge_governance_config SET version = 2, next_eligible_at = $2 WHERE workspace_id = $1`, testWorkspaceID, now.Add(-time.Minute))
 	changed := first
 	changed.ConfigVersion = 2
 	changed.Cadence = "monthly"
