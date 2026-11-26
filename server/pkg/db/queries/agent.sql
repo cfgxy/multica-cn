@@ -111,6 +111,15 @@ RETURNING *;
 -- Builder sessions own their hidden execution agent. Deleting the session
 -- removes that carrier and its task rows; the kind guard prevents this cleanup
 -- path from ever deleting a user-authored agent.
+WITH deleted_scope_items AS (
+    DELETE FROM prompt_quiz_agent_scope_item WHERE agent_id = $1
+),
+deleted_scope_audit AS (
+    DELETE FROM prompt_quiz_agent_scope_audit WHERE agent_id = $1
+),
+deleted_scope AS (
+    DELETE FROM prompt_quiz_agent_scope WHERE agent_id = $1
+)
 DELETE FROM agent
 WHERE id = $1 AND kind = 'system' AND system_key LIKE 'agent_builder:%';
 

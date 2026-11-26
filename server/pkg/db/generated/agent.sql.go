@@ -4413,6 +4413,15 @@ func (q *Queries) CreateSystemUserAgent(ctx context.Context, arg CreateSystemUse
 }
 
 const deleteSystemAgentByID = `-- name: DeleteSystemAgentByID :exec
+WITH deleted_scope_items AS (
+    DELETE FROM prompt_quiz_agent_scope_item WHERE agent_id = $1
+),
+deleted_scope_audit AS (
+    DELETE FROM prompt_quiz_agent_scope_audit WHERE agent_id = $1
+),
+deleted_scope AS (
+    DELETE FROM prompt_quiz_agent_scope WHERE agent_id = $1
+)
 DELETE FROM agent
 WHERE id = $1 AND kind = 'system' AND system_key LIKE 'agent_builder:%'
 `
