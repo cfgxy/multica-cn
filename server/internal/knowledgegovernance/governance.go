@@ -175,11 +175,13 @@ type RunStats struct {
 // the stable workspace manager whose identity remains accountable for a
 // system-initiated task.
 type ScheduleTarget struct {
-	WorkspaceID string
-	DirID       string
-	ActorID     string
-	Cadence     string
-	Timezone    string
+	WorkspaceID    string
+	DirID          string
+	ActorID        string
+	Cadence        string
+	Timezone       string
+	ConfigVersion  int32
+	ScheduleBucket string
 }
 
 // scheduleBucket is the durable, local-time execution window. ISO weeks start
@@ -205,13 +207,12 @@ func scheduleBucket(now time.Time, cadence, timezone string) (string, error) {
 	}
 }
 
-// ListScheduleTargets returns only due, enabled configuration rows. The
-// scheduler claims a bucket only after processing every directory in the
-// workspace, so a workspace with multiple directories is not partially
-// skipped by the first successful directory.
+// ListScheduleTargets returns enabled configuration rows with a current local
+// schedule bucket. Claiming happens inside RunScheduledWorkspace's enqueue
+// transaction; list reads are intentionally not themselves a concurrency gate.
 func (r *Runner) ListScheduleTargets(ctx context.Context) ([]ScheduleTarget, error) {
 	rows, err := r.DB.Query(ctx, `
-SELECT d.workspace_id, d.id AS dir_id, manager.user_id AS actor_id, c.cadence, c.timezone, c.last_scheduled_bucket
+SELECT d.workspace_id, d.id AS dir_id, manager.user_id AS actor_id, c.cadence, c.timezone, c.version
 FROM knowledge_dir d
 JOIN knowledge_governance_config c
   ON c.workspace_id = d.workspace_id AND c.enabled = TRUE
@@ -236,17 +237,14 @@ ORDER BY d.workspace_id ASC, d.created_at ASC, d.id ASC`)
 	for rows.Next() {
 		var workspaceID, dirID, actorID pgtype.UUID
 		var target ScheduleTarget
-		var lastBucket string
-		if err := rows.Scan(&workspaceID, &dirID, &actorID, &target.Cadence, &target.Timezone, &lastBucket); err != nil {
+		if err := rows.Scan(&workspaceID, &dirID, &actorID, &target.Cadence, &target.Timezone, &target.ConfigVersion); err != nil {
 			return nil, fmt.Errorf("knowledge governance: scan schedule target: %w", err)
 		}
 		bucket, bucketErr := scheduleBucket(now, target.Cadence, target.Timezone)
 		if bucketErr != nil {
 			return nil, fmt.Errorf("knowledge governance: schedule target: %w", bucketErr)
 		}
-		if lastBucket == bucket {
-			continue
-		}
+		target.ScheduleBucket = bucket
 		target.WorkspaceID = util.UUIDToString(workspaceID)
 		target.DirID = util.UUIDToString(dirID)
 		target.ActorID = util.UUIDToString(actorID)
@@ -256,28 +254,6 @@ ORDER BY d.workspace_id ASC, d.created_at ASC, d.id ASC`)
 		return nil, fmt.Errorf("knowledge governance: iterate schedule targets: %w", err)
 	}
 	return targets, nil
-}
-
-// MarkScheduleBucket records a completed workspace schedule window. It is
-// deliberately conditional so a stale scheduler cannot move the marker
-// backwards after a newer lease has completed.
-func (r *Runner) MarkScheduleBucket(ctx context.Context, workspaceID, cadence, timezone string) error {
-	workspace, err := util.ParseUUID(workspaceID)
-	if err != nil {
-		return fmt.Errorf("knowledge governance: invalid workspace id: %w", err)
-	}
-	bucket, err := scheduleBucket(r.now(), cadence, timezone)
-	if err != nil {
-		return fmt.Errorf("knowledge governance: schedule bucket: %w", err)
-	}
-	_, err = r.DB.Exec(ctx, `
-UPDATE knowledge_governance_config
-SET last_scheduled_bucket = $2
-WHERE workspace_id = $1 AND last_scheduled_bucket < $2`, workspace, bucket)
-	if err != nil {
-		return fmt.Errorf("knowledge governance: mark schedule bucket: %w", err)
-	}
-	return nil
 }
 
 // ReconcileStaleRuns is the scheduler backstop for runs whose task reached a
@@ -356,7 +332,22 @@ WHERE status = 'running'
 	return terminalResult.RowsAffected() + unenqueuedResult.RowsAffected() + replayed, nil
 }
 
+// ErrScheduleClaimed means an earlier scheduler lease already committed this
+// directory/config/bucket. It is intentionally a no-op rather than a retry.
+var ErrScheduleClaimed = errors.New("knowledge governance: schedule bucket already claimed")
+
+// RunScheduledWorkspace creates one claimed scheduled run. Its claim and task
+// enqueue share one transaction, so another directory's failure cannot cause a
+// successful directory to replay on the next scheduler sweep.
+func (r *Runner) RunScheduledWorkspace(ctx context.Context, target ScheduleTarget) (*RunStats, error) {
+	return r.runWorkspace(ctx, target.WorkspaceID, target.DirID, target.ActorID, "schedule", &target)
+}
+
 func (r *Runner) RunWorkspace(ctx context.Context, workspaceID, dirID, actorID, trigger string) (*RunStats, error) {
+	return r.runWorkspace(ctx, workspaceID, dirID, actorID, trigger, nil)
+}
+
+func (r *Runner) runWorkspace(ctx context.Context, workspaceID, dirID, actorID, trigger string, scheduled *ScheduleTarget) (*RunStats, error) {
 	// A governance run becomes durable once creation starts. Continue the bounded
 	// setup if the initiating HTTP request disconnects so no running row is left
 	// without a task merely because its caller went away.
@@ -402,17 +393,42 @@ WHERE id = $1 AND workspace_id = $2 AND removed = FALSE`, dir, ws).Scan(&scope);
 		return nil, fmt.Errorf("knowledge governance: scope: %w", err)
 	}
 	var agentID, runtimeID pgtype.UUID
-	err = tx.QueryRow(runCtx, `
+	if scheduled == nil {
+		err = tx.QueryRow(runCtx, `
 SELECT a.id, a.runtime_id
 FROM knowledge_governance_config c
 JOIN agent a ON a.id = c.agent_id
 WHERE c.workspace_id = $1 AND c.enabled = TRUE
-  AND a.workspace_id = $1 AND a.archived_at IS NULL AND a.runtime_id IS NOT NULL`, ws).Scan(&agentID, &runtimeID)
+  AND a.workspace_id = $1 AND a.archived_at IS NULL AND a.runtime_id IS NOT NULL
+FOR KEY SHARE OF c`, ws).Scan(&agentID, &runtimeID)
+	} else {
+		err = tx.QueryRow(runCtx, `
+SELECT a.id, a.runtime_id
+FROM knowledge_governance_config c
+JOIN agent a ON a.id = c.agent_id
+WHERE c.workspace_id = $1 AND c.version = $2 AND c.enabled = TRUE
+  AND a.workspace_id = $1 AND a.archived_at IS NULL AND a.runtime_id IS NOT NULL
+FOR KEY SHARE OF c`, ws, scheduled.ConfigVersion).Scan(&agentID, &runtimeID)
+	}
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNoExecutor
 	}
 	if err != nil {
 		return nil, fmt.Errorf("knowledge governance: execution agent: %w", err)
+	}
+	if scheduled != nil {
+		var claimID pgtype.UUID
+		err = tx.QueryRow(runCtx, `
+INSERT INTO knowledge_governance_schedule_claim (workspace_id, dir_id, config_version, schedule_bucket)
+VALUES ($1, $2, $3, $4)
+ON CONFLICT (workspace_id, dir_id, config_version, schedule_bucket) DO NOTHING
+RETURNING id`, ws, dir, scheduled.ConfigVersion, scheduled.ScheduleBucket).Scan(&claimID)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, ErrScheduleClaimed
+		}
+		if err != nil {
+			return nil, fmt.Errorf("knowledge governance: claim schedule bucket: %w", err)
+		}
 	}
 
 	now := r.now()

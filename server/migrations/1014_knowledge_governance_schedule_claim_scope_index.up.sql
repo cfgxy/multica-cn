@@ -1,0 +1,2 @@
+CREATE UNIQUE INDEX CONCURRENTLY uidx_knowledge_governance_schedule_claim_scope
+ON knowledge_governance_schedule_claim (workspace_id, dir_id, config_version, schedule_bucket);
