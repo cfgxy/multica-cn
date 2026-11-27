@@ -896,6 +896,61 @@ func TestProgressCardCredentialsNeverRenderedRaw(t *testing.T) {
 	}
 }
 
+// TestProgressDemandRedactsTriggerSummary covers the user-controlled summary
+// path, which does not pass through tool payload sanitization. A terminal card
+// must never echo a credential typed in the triggering Lark message.
+func TestProgressDemandRedactsTriggerSummary(t *testing.T) {
+	secret := "ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmn"
+	render, err := NewDefaultProgressRenderer().RenderProgress(ProgressInput{
+		AgentName:      "TestAgent",
+		State:          ProgressStateCompleted,
+		TriggerSummary: "@TestAgent 请检查令牌 " + secret,
+	})
+	if err != nil {
+		t.Fatalf("render terminal card: %v", err)
+	}
+	if strings.Contains(render.JSON, secret) {
+		t.Fatalf("trigger summary credential must not render raw: %s", render.JSON)
+	}
+	if !strings.Contains(render.JSON, "需求：") || !strings.Contains(render.JSON, "[REDACTED") {
+		t.Errorf("terminal demand must retain a redacted summary: %s", render.JSON)
+	}
+}
+
+// TestProgressCardRedactsFallbackInputDemand verifies the older/imported-task
+// path too: when TriggerSummary is empty, the first immutable input is loaded
+// and then redacted before the terminal PATCH renders it.
+func TestProgressCardRedactsFallbackInputDemand(t *testing.T) {
+	p, q, api, _ := newProgressTestPatcher(t)
+	taskID := uuidFromString(t, "ee787878-ee78-ee78-ee78-eeeeeeeeeeee")
+	secret := "sk-proj-abc123def456ghi789jkl012mno345"
+	q.task.ChatInputTaskID = taskID
+	q.taskChannelIngested = true
+	q.inputMessages = []db.ChatMessage{{Content: "@TestAgent 使用密钥 " + secret + " 检查配置"}}
+
+	p.handleTaskMessage(progressFrame(uuidString(taskID), uuidString(q.binding.ChatSessionID), 1, protocol.TaskMessagePayload{
+		Type: "text", Content: "checking configuration",
+	}))
+	p.handleEvent(events.Event{
+		Type: protocol.EventChatDone, TaskID: uuidString(taskID), ChatSessionID: uuidString(q.binding.ChatSessionID),
+		Payload: protocol.ChatDonePayload{TaskID: uuidString(taskID), Content: "done"},
+	})
+	p.progress.waitIdle()
+
+	api.mu.Lock()
+	defer api.mu.Unlock()
+	if len(api.patched) != 1 {
+		t.Fatalf("expected one terminal patch, got %d", len(api.patched))
+	}
+	card := api.patched[0].CardJSON
+	if strings.Contains(card, secret) {
+		t.Fatalf("fallback input credential must not render raw: %s", card)
+	}
+	if !strings.Contains(card, "需求：") || !strings.Contains(card, "[REDACTED") {
+		t.Errorf("fallback demand must retain a redacted summary: %s", card)
+	}
+}
+
 // TestProgressCardClearsTypingBadgeOnFirstFrame settles the badge-vs-card
 // ordering: once the card is on screen carrying "进行中", the Typing reaction is
 // a second "processing" signal and comes off.
