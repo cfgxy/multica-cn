@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"html"
 	"strings"
 	"sync"
 	"time"
@@ -238,6 +239,26 @@ func progressPlainTextElement(content string) map[string]any {
 	}
 }
 
+func progressToolResultElement(e ProgressEntry) map[string]any {
+	// plain_text applies text_color to every glyph, including the result emoji.
+	// Keep the dot outside the grey span so Lark renders its native green/red/
+	// neutral colour; escape the dynamic text before placing it in lark_md.
+	content := "<font color='grey'>工具结果 · </font>" + progressResultDot(e.Success) +
+		"<font color='grey'> " + html.EscapeString(e.Tool)
+	if e.Text != "" {
+		content += " · " + html.EscapeString(e.Text)
+	}
+	content += "</font>"
+	return map[string]any{
+		"tag": "div",
+		"text": map[string]any{
+			"tag":       "lark_md",
+			"content":   content,
+			"text_size": "notation",
+		},
+	}
+}
+
 func renderProgressEntryElement(e ProgressEntry) map[string]any {
 	var content string
 	switch e.Kind {
@@ -249,19 +270,15 @@ func renderProgressEntryElement(e ProgressEntry) map[string]any {
 			content += " · " + e.Text
 		}
 	case ProgressEntryToolResult:
-		content = "工具结果 · " + progressResultDot(e.Success) + " " + e.Tool
-		if e.Text != "" {
-			content += " · " + e.Text
-		}
+		return progressToolResultElement(e)
 	case ProgressEntryError:
 		content = "错误 · " + e.Text
 	default:
 		content = e.Text
 	}
-	// Schema-2 plain_text is deliberately used for every running row: it is
-	// the one Lark element that supports the compact notation size and muted
-	// colour without introducing markdown emphasis. URLs and error markers
-	// remain literal, readable text rather than being hidden by styling.
+	// Every non-result running row uses schema-2 plain_text so URLs and error
+	// markers remain literal rather than being interpreted as Markdown. Result
+	// rows deliberately use progressToolResultElement to preserve dot colour.
 	return progressPlainTextElement(content)
 }
 
