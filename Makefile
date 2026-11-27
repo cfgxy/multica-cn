@@ -6,7 +6,7 @@ ENV_FILE ?= $(if $(wildcard $(MAIN_ENV_FILE)),$(MAIN_ENV_FILE),$(if $(wildcard $
 # Including the env file directly makes a single multi-line value in it — a PEM
 # key, a certificate — abort every target with "missing separator" before the
 # first recipe runs, because makefile syntax has no line continuation for
-# values (RUYI-218). scripts/env-make-include.sh rewrites those values as
+# values. scripts/env-make-include.sh rewrites those values as
 # `define` blocks, which the `export` below still delivers to subprocesses with
 # their newlines intact, and passes everything else through unchanged.
 ifneq ($(wildcard $(ENV_FILE)),)
@@ -24,7 +24,7 @@ PORT := $(or $(BACKEND_PORT),$(API_PORT),$(SERVER_PORT),$(PORT),8080)
 # sends relative URLs through the Next proxy (REMOTE_API_URL) and derives the
 # WS URL from window.location. Do not bake absolute localhost URLs here — this
 # block is exported, and an exported value outranks .env in compose variable
-# interpolation, silently overriding the operator's .env (RUYI-256).
+# interpolation, silently overriding the operator's .env.
 ifeq ($(origin MULTICA_PUBLIC_URL), undefined)
 MULTICA_PUBLIC_URL :=
 endif
@@ -97,7 +97,7 @@ makehelp: help ## Alias for `make help`
 # variable into a container only when some compose file declares it, so setting
 # those three in .env does nothing on its own: a selfhost run without this overlay
 # rebuilds frontend/backend without them and silently drops the public /api/mcp
-# entry point back to 404 (RUYI-260). Overlay the file whenever it exists, and keep
+# entry point back to 404. Overlay the file whenever it exists, and keep
 # the file list byte-identical when it does not, so upstream users, CI and
 # deployments that never configured MCP are unaffected.
 SELFHOST_LOCAL_FILE := docker-compose.selfhost.local.yml
@@ -105,7 +105,7 @@ SELFHOST_LOCAL_OVERRIDE := $(if $(wildcard $(SELFHOST_LOCAL_FILE)),-f $(SELFHOST
 SELFHOST_COMPOSE_FILES := $(strip -f docker-compose.selfhost.yml $(SELFHOST_LOCAL_OVERRIDE))
 SELFHOST_BUILD_COMPOSE_FILES := $(strip -f docker-compose.selfhost.yml -f docker-compose.selfhost.build.yml $(SELFHOST_LOCAL_OVERRIDE))
 
-# RUYI-867: stamp selfhost-build backend images with the full 40-char HEAD SHA
+# Stamp selfhost-build backend images with the full 40-char HEAD SHA
 # so /health reports `commit` instead of `unknown` and can serve as immutable
 # release evidence. An explicitly provided COMMIT (make command line or shell
 # environment) always wins; only when unset does it default to this
@@ -188,42 +188,26 @@ selfhost-stop: ## Stop the self-hosted Docker Compose stack (overlays docker-com
 daemon-build: ## Build the runtime daemon CLI with release version metadata
 	cd server && go build -ldflags "-X main.version=$$(git tag -l 'v[0-9]*' --sort=-v:refname | head -1 | sed 's/^v//') -X main.commit=$$(git rev-parse --short HEAD) -X main.date=$$(date -u '+%Y-%m-%dT%H:%M:%SZ')" -o bin/multica ./cmd/multica
 
-# 部署参数：以「执行 make 的普通用户」为 daemon 运行用户（勿用 sudo make）。
-# daemon-install 需要 sudo；daemon-update 在无免密 sudo 时仍更新二进制并安全重启，
-# 但跳过 systemd / node-exporter / linger 等主机配置收敛。
-# 换机器按规格覆盖：make daemon-install CPU_QUOTA=400% MEMORY_HIGH=8G MEMORY_MAX=12G
-# 背压准入阈值不在本文件：参数唯一权威源 = 空间设置（web UI），经心跳下发到 daemon
-# 热生效（RUYI-618）；systemd env 注入已退役，杜绝双源漂移。
-# PROFILE 决定 daemon 读取的 multica 配置（systemd 实例名即 profile 名）：
-#   make daemon-install                → multica-daemon@default，读 ~/.multica/
-#   make daemon-install PROFILE=idata  → multica-daemon@idata，读 ~/.multica/profiles/idata/
+# Run deployment targets as the regular user. The systemd instance name selects the daemon profile.
 PROFILE ?= default
 
-# 主机侧渲染参数持久化（RUYI-396）：daemon-install / 有免密 sudo 的 daemon-update 渲染安装成功后，
-# 把当次生效值写回该文件；下次渲染前先读回——已按机配置的值不会被裸跑 update
-# 静默冲回默认。优先级：make 命令行传参 > 本文件 > 下方代码默认；手工微调直接
-# 编辑该文件，删除该文件即恢复代码默认。
+# Host settings persist across updates; command-line overrides take precedence.
 DAEMON_RENDER_MK ?= $(HOME)/.multica/daemon-render.mk
 -include $(DAEMON_RENDER_MK)
 
 CPU_QUOTA ?= 600%
 MEMORY_HIGH ?= 24G
 MEMORY_MAX ?= 28G
-# 主机资源指标（RUYI-618）：daemon 伴随 node-exporter（multica-node-exporter.service）
-# 由 Prometheus 以静态 targets 直抓，资源指标口径 = node-exporter 原生指标；daemon
-# 不经手资源指标。NODE_EXPORTER_LISTEN 置空 = 不安装 node-exporter（该主机不进面板）。
-# 监听默认全接口 :9100（Prometheus 需可达），用防火墙把端口收敛到 Prometheus 主机。
+# Set NODE_EXPORTER_LISTEN to an empty value to skip installing the exporter.
 NODE_EXPORTER_LISTEN ?= :9100
 NODE_EXPORTER_VERSION ?= 1.9.1
 NODE_EXPORTER_BIN ?= $(HOME)/.local/bin/node_exporter
 NODE_EXPORTER_CPU_QUOTA ?= 20%
 NODE_EXPORTER_MEMORY_HIGH ?= 64M
 NODE_EXPORTER_MEMORY_MAX ?= 128M
-# 运行用户/组：以执行 make 的普通用户为准（make 层展开，避免 shell 单引号吞掉命令替换）
 USER ?= $(shell id -un)
 GROUP ?= $(shell id -gn)
 
-# unit 渲染命令：install / update 共用同一套替换，保证两条链路渲染产物一致
 DAEMON_UNIT_RENDER = sed \
 	  -e 's|@USER@|$(USER)|g' \
 	  -e 's|@GROUP@|$(GROUP)|g' \
@@ -242,28 +226,21 @@ NODE_EXPORTER_UNIT_RENDER = sed \
 	  -e 's|@MEMORY_HIGH@|$(NODE_EXPORTER_MEMORY_HIGH)|g' \
 	  -e 's|@MEMORY_MAX@|$(NODE_EXPORTER_MEMORY_MAX)|g'
 
-# 渲染参数持久化写回（install/update 安装成功后调用；在 recipe 内展开为多行 shell）
 define DAEMON_RENDER_PERSIST
 printf '%s\n' \
-	  '# multica-daemon systemd unit 渲染参数（主机侧持久化，由 make daemon-install / 有免密 sudo 的 daemon-update 维护）' \
-	  '# 优先级：make 命令行传参 > 本文件 > Makefile 代码默认；手工微调直接编辑本文件，删除即恢复默认' \
+	  '# multica-daemon systemd unit settings' \
+	  '# Command-line overrides take precedence over these settings.' \
 	  'CPU_QUOTA ?= $(CPU_QUOTA)' \
 	  'MEMORY_HIGH ?= $(MEMORY_HIGH)' \
 	  'MEMORY_MAX ?= $(MEMORY_MAX)' \
 	  'NODE_EXPORTER_LISTEN ?= $(NODE_EXPORTER_LISTEN)' > $(DAEMON_RENDER_MK)
 endef
 
-# node-exporter 收敛（RUYI-618）：NODE_EXPORTER_LISTEN 非空时安装启用
-# multica-node-exporter.service（二进制缺失自动从上游 release 下载到
-# NODE_EXPORTER_BIN）。资源指标由 Prometheus 静态 targets 直抓该端口，
-# daemon 不经手；将主机加入面板 = 在 deploy/prometheus/prometheus.yml 的
-# node-exporter job 加一条带 daemon 标签的静态 target。
-# 置空 NODE_EXPORTER_LISTEN 整体跳过（unit 不卸载）。
 define ENSURE_NODE_EXPORTER
 if [ -n "$(NODE_EXPORTER_LISTEN)" ]; then \
 	  if [ ! -x "$(NODE_EXPORTER_BIN)" ]; then \
 		    arch=$$(uname -m); \
-		    case $$arch in x86_64) goarch=amd64;; aarch64|arm64) goarch=arm64;; *) echo "ERROR: node_exporter 不支持架构 $$arch（可手动安装到 $(NODE_EXPORTER_BIN)）"; exit 1;; esac; \
+		    case $$arch in x86_64) goarch=amd64;; aarch64|arm64) goarch=arm64;; *) echo "ERROR: node_exporter does not support $$arch; install it at $(NODE_EXPORTER_BIN)"; exit 1;; esac; \
 		    tmp=$$(mktemp -d); \
 		    if curl -fsSL "https://github.com/prometheus/node_exporter/releases/download/v$(NODE_EXPORTER_VERSION)/node_exporter-$(NODE_EXPORTER_VERSION).linux-$$goarch.tar.gz" -o "$$tmp/ne.tar.gz" \
 		      && tar -xzf "$$tmp/ne.tar.gz" -C "$$tmp" \
@@ -271,36 +248,24 @@ if [ -n "$(NODE_EXPORTER_LISTEN)" ]; then \
 		      rm -rf "$$tmp"; \
 		    else \
 		      rm -rf "$$tmp"; \
-		      echo "ERROR: node_exporter 下载失败（可手动安装到 $(NODE_EXPORTER_BIN)，或 make daemon-install NODE_EXPORTER_LISTEN= 跳过）"; \
+		      echo "ERROR: Could not install node_exporter. Set NODE_EXPORTER_LISTEN= to skip it."; \
 		      exit 1; \
 		    fi; \
 	  fi; \
-	  $(NODE_EXPORTER_UNIT_RENDER) deploy/multica-node-exporter.service.template > /tmp/multica-node-exporter.service; \
-	  sudo install -m644 /tmp/multica-node-exporter.service /etc/systemd/system/multica-node-exporter.service; \
-	  sudo systemctl daemon-reload; \
-	  sudo systemctl enable --now multica-node-exporter.service; \
-	  echo "== node-exporter 已就绪：$(NODE_EXPORTER_LISTEN) =="; \
-else \
-	  echo "node-exporter：跳过（NODE_EXPORTER_LISTEN 置空）"; \
+	  $(NODE_EXPORTER_UNIT_RENDER) deploy/multica-node-exporter.service.template > /tmp/multica-node-exporter.service && \
+	    sudo install -m644 /tmp/multica-node-exporter.service /etc/systemd/system/multica-node-exporter.service && \
+	    sudo systemctl daemon-reload && \
+	    sudo systemctl enable --now multica-node-exporter.service || \
+	    echo "WARN: Could not configure the node_exporter service" >&2; \
 fi
 endef
 
-# DeerFlow 配置收敛（RUYI-548）：daemon 安装/更新两条链路共用——目标实例 config.json
-# 缺 backends.deerflow.home 且本机存在 DeerFlow 部署（$(DEERFLOW_HOME)/config.yaml 在位）
-# 时自动补写，先于实例启动/重启执行，重启即生效（Owner 指令：安装和更新部署时自动配置）。
-# 幂等：键已存在不覆盖、只回显既有值；写入经同目录临时文件原子替换，保留原文件权限与
-# 全部既有键（token 不失）。DEERFLOW_HOME 置空整体禁用；按机覆盖：
+# Configure an existing DeerFlow installation only when the profile has no home set.
 #   make daemon-install DEERFLOW_HOME=/path/to/deerflow
-# 仅收敛 deerflow 一项，不建通用 backend 配置框架。
 DEERFLOW_HOME ?= $(HOME)/srv/deerflow
 
-# $(1) = 目标 profile 名；ALL = default 配置 + 全部 enabled 实例的 profile 配置。
 define DEERFLOW_CONVERGE_SCOPE
-if [ -z "$(DEERFLOW_HOME)" ]; then \
-	  echo "deerflow 配置收敛：跳过（DEERFLOW_HOME 置空，整体禁用）"; \
-elif [ ! -f "$(DEERFLOW_HOME)/config.yaml" ]; then \
-	  echo "deerflow 配置收敛：跳过（未检测到 DeerFlow 部署：$(DEERFLOW_HOME)/config.yaml）"; \
-else \
+if [ -n "$(DEERFLOW_HOME)" ] && [ -f "$(DEERFLOW_HOME)/config.yaml" ]; then \
 	  if [ "$(1)" = ALL ]; then \
 		    cfgs="$(HOME)/.multica/config.json"; \
 		    for u in $$(systemctl list-unit-files 'multica-daemon@*.service' --no-legend 2>/dev/null | awk '$$2 == "enabled" {print $$1}'); do \
@@ -313,34 +278,27 @@ else \
 		    cfgs="$(HOME)/.multica/profiles/$(1)/config.json"; \
 	  fi; \
 	  for c in $$cfgs; do \
-		    if [ ! -f "$$c" ]; then \
-			      echo "deerflow 配置收敛：跳过（config 不存在：$$c）"; \
-		    elif jq -e '.backends.deerflow.home != null' "$$c" >/dev/null 2>&1; then \
-			      echo "deerflow 配置收敛：已配置，保持 backends.deerflow.home=$$(jq -r '.backends.deerflow.home' "$$c")（$$c）"; \
-		    else \
+		    [ -f "$$c" ] || continue; \
+		    if ! jq -e '.backends.deerflow.home != null' "$$c" >/dev/null 2>&1; then \
 			      dftmp=""; \
 			      if dftmp="$$(mktemp "$$c.XXXXXX")" \
 				      && jq --arg h "$(DEERFLOW_HOME)" '.backends.deerflow.home = $$h' "$$c" > "$$dftmp" \
 				      && chmod --reference="$$c" "$$dftmp" \
 				      && mv -f "$$dftmp" "$$c"; then \
-				        echo "deerflow 配置收敛：已写入 $$c → backends.deerflow.home=$(DEERFLOW_HOME)"; \
+				        :; \
 			      else \
 				        [ -n "$$dftmp" ] && rm -f "$$dftmp"; \
-				        echo "WARN: deerflow 配置写入失败（已保留原 config）：$$c"; \
+				        echo "WARN: Could not update DeerFlow configuration; kept $$c"; \
 			      fi; \
 		    fi; \
 	  done; \
 fi
 endef
 
-# Daemon 统一纳管为 systemd 模板实例 multica-daemon@<profile>，实例名即 profile 名。
-# 实例名 default 是保留字（模板内特判为不带 --profile 的默认 profile），因此旧机器上
-# 的非模板 multica-daemon.service 由 PROFILE=default 安装自动迁移：disable 并删除旧
-# 单元 → enable multica-daemon@default；状态目录与 daemon.id 不变，服务端视角是
-# 同一个 daemon。多个连接 = 逐个 profile 各跑一次。
-daemon-install: daemon-build ## Install daemon as systemd instance: make daemon-install [PROFILE=idata] (default profile when PROFILE omitted)
+# Installing the default profile replaces the legacy systemd unit.
+daemon-install: daemon-build ## Install the daemon systemd instance (optional PROFILE)
 	@if [ -n "$$SUDO_USER" ]; then echo "ERROR: run 'make daemon-install' as the regular user (sudo is invoked internally)"; exit 1; fi
-	@test -f ~/.bashrc || echo "WARN: ~/.bashrc 不存在，daemon 将缺少登录环境"
+	@test -f ~/.bashrc || echo "WARN: ~/.bashrc is missing; the daemon may not inherit your shell environment"
 	@if [ "$(PROFILE)" = default ]; then \
 		test -f $(HOME)/.multica/config.json || { echo "ERROR: default profile is not authenticated — run 'multica login' first"; exit 1; }; \
 	else \
@@ -357,15 +315,9 @@ daemon-install: daemon-build ## Install daemon as systemd instance: make daemon-
 	$(DAEMON_UNIT_RENDER) deploy/multica-daemon@.service.template > /tmp/multica-daemon@.service
 	sudo install -m644 /tmp/multica-daemon@.service /etc/systemd/system/multica-daemon@.service
 	@mkdir -p $(HOME)/.multica && $(DAEMON_RENDER_PERSIST)
-	@echo "渲染参数已持久化 → $(DAEMON_RENDER_MK)（daemon-update 重渲染时自动读回）"
-	# linger（RUYI-529）：supervised 启动经 systemd-run 依赖用户管理器总线常驻；
-	# Linger=no 时会话注销即回收总线，全部启动集中失败。幂等开启，失败不阻断安装但显式告警。
 	@loginctl enable-linger $(USER) 2>/dev/null || sudo loginctl enable-linger $(USER) || \
-		echo "WARN: enable-linger 失败——supervised 启动将依赖活动会话；请手工执行: sudo loginctl enable-linger $(USER)"
-	@loginctl show-user $(USER) -p Linger || true
-	# node-exporter 收敛（RUYI-618）：先于 daemon 启动，daemon 起来即可抓取
+		echo "WARN: The daemon may require an active session. Run: sudo loginctl enable-linger $(USER)"
 	@$(call ENSURE_NODE_EXPORTER)
-	# deerflow 配置收敛（RUYI-548）：目标实例 config.json 缺 backends.deerflow.home 时自动补写（先于启动）
 	@$(call DEERFLOW_CONVERGE_SCOPE,$(PROFILE))
 	sudo install -m644 deploy/multica-oom-guard.service /etc/systemd/system/multica-oom-guard.service
 	sudo install -m755 deploy/oom-guard.sh /usr/local/sbin/multica-oom-guard.sh
@@ -375,7 +327,6 @@ daemon-install: daemon-build ## Install daemon as systemd instance: make daemon-
 	sudo systemctl restart multica-oom-guard.service
 	@systemctl --no-pager --lines=0 status multica-daemon@$(PROFILE).service
 	@bash deploy/oom-preflight.sh || true
-	@echo "daemon profile $(PROFILE) → multica-daemon@$(PROFILE)；日志: multica daemon logs$(if $(filter default,$(PROFILE)),, --profile $(PROFILE))"
 
 daemon-preflight: ## Read-only check of kernel/system prerequisites for the OOM guard
 	@bash deploy/oom-preflight.sh
@@ -383,7 +334,9 @@ daemon-preflight: ## Read-only check of kernel/system prerequisites for the OOM 
 daemon-update: daemon-build ## Update daemon binary and restart PROFILE (default when omitted); converge systemd config only with passwordless sudo
 	@if [ -n "$$SUDO_USER" ]; then echo "ERROR: run 'make daemon-update' as the regular user"; exit 1; fi
 	install -m755 server/bin/multica $(HOME)/.local/bin/multica
-	@if sudo -n true >/dev/null 2>&1; then \
+	@# Recursive recipes execute even with -n, -q, or -t.
+	@case "$(filter-out -%,$(firstword $(MAKEFLAGS)))" in *n*|*q*|*t*) exit 0;; esac; \
+	if sudo -n true >/dev/null 2>&1; then \
 		$(MAKE) --no-print-directory daemon-update-systemd PROFILE="$(PROFILE)"; \
 	else \
 		echo "WARN: passwordless sudo unavailable; skipped systemd unit, daemon-reload, linger, node-exporter, and host render-parameter updates"; \
@@ -395,60 +348,39 @@ daemon-update: daemon-build ## Update daemon binary and restart PROFILE (default
 # prompt. PROFILE is always explicit here; the public target defaults it to
 # `default` and never fans out to every enabled profile.
 daemon-update-systemd:
-	@if [ -f $(DAEMON_RENDER_MK) ]; then echo "== 读回主机渲染参数：$(DAEMON_RENDER_MK) =="; fi
 	$(DAEMON_UNIT_RENDER) deploy/multica-daemon@.service.template > /tmp/multica-daemon@.service
 	@if [ -f /etc/systemd/system/multica-daemon@.service ]; then \
 		ts=$$(date +%Y%m%d-%H%M%S); \
 		snap=/var/backups/multica-daemon/multica-daemon@.service.bak-$$ts; \
-		sudo mkdir -p /var/backups/multica-daemon; \
+		sudo mkdir -p /var/backups/multica-daemon && \
 		sudo cp -a /etc/systemd/system/multica-daemon@.service "$$snap"; \
-		echo "== unit 快照（回滚锚点）→ $$snap =="; \
-		echo "== 重渲染 diff（旧 → 新）=="; \
-		diff -u "$$snap" /tmp/multica-daemon@.service || true; \
-	else \
-		echo "== 首次渲染：无既有 unit，跳过快照与 diff =="; \
 	fi
 	sudo install -m644 /tmp/multica-daemon@.service /etc/systemd/system/multica-daemon@.service
 	@mkdir -p $(HOME)/.multica && $(DAEMON_RENDER_PERSIST)
-	@echo "渲染参数已持久化 → $(DAEMON_RENDER_MK)"
-	# linger（RUYI-529）：同 daemon-install——安装/更新任一路径都收敛 linger 为开启
 	@loginctl enable-linger $(USER) 2>/dev/null || sudo loginctl enable-linger $(USER) || \
-		echo "WARN: enable-linger 失败——supervised 启动将依赖活动会话；请手工执行: sudo loginctl enable-linger $(USER)"
-	@loginctl show-user $(USER) -p Linger || true
-	# node-exporter 收敛（RUYI-618）：与 install 同一套收敛，幂等
+		echo "WARN: The daemon may require an active session. Run: sudo loginctl enable-linger $(USER)"
 	@$(call ENSURE_NODE_EXPORTER)
-	# deerflow 配置收敛（RUYI-548）：daemon-update 始终只处理目标 PROFILE
 	@$(call DEERFLOW_CONVERGE_SCOPE,$(PROFILE))
 	sudo systemctl daemon-reload
 	@unit="multica-daemon@$(PROFILE).service"; \
-		echo "== restart $$unit =="; \
-		sudo systemctl restart "$$unit"; \
+		sudo systemctl restart "$$unit" && \
 		systemctl --no-pager --lines=0 status "$$unit"
 
-# 卸载 = 只清 systemd 启动项与 oom-guard：默认 multica-daemon.service、模板
-# multica-daemon@.service 及全部已启用实例、guard 脚本/单元，并顺带停掉手动
-# 后台启动的 daemon。保留 ~/.multica（各 profile 的连接配置/token）、
-# ~/multica_workspaces* 和 CLI 二进制；PURGE=1 额外删除 ~/.local/bin/multica。
+# Uninstall preserves profiles and workspaces; PURGE=1 also removes the CLI.
 daemon-uninstall: ## Remove daemon systemd units (default + all @profile instances) + OOM guard; keeps profiles/tokens; PURGE=1 also removes the CLI binary
 	@if [ -n "$$SUDO_USER" ]; then echo "ERROR: run 'make daemon-uninstall' as the regular user (sudo is invoked internally)"; exit 1; fi
-	@echo "== 停止并禁用 multica-oom-guard =="
 	@sudo systemctl disable --now multica-oom-guard.service >/dev/null 2>&1 || true
-	@echo "== 停止并禁用默认实例 multica-daemon.service（如已安装）=="
 	@sudo systemctl disable --now multica-daemon.service >/dev/null 2>&1 || true
-	@echo "== 停止并禁用全部 multica-daemon@<profile> 实例 =="
 	@units="$$(systemctl list-unit-files 'multica-daemon@*.service' --no-legend 2>/dev/null | awk '{print $$1}'; \
 	        ls /etc/systemd/system/multi-user.target.wants/ 2>/dev/null | grep '^multica-daemon@' || true)"; \
 	for u in $$units; do sudo systemctl disable --now "$$u" >/dev/null 2>&1 || true; done
-	@echo "== 停止并禁用 multica-node-exporter（RUYI-618）=="
 	@sudo systemctl disable --now multica-node-exporter.service >/dev/null 2>&1 || true
-	@echo "== 停掉手动后台启动的 daemon（如有）=="
 	@$(HOME)/.local/bin/multica daemon stop >/dev/null 2>&1 || true; \
 	for cfg in $(HOME)/.multica/profiles/*/config.json; do \
 		[ -f "$$cfg" ] || continue; \
 		p=$${cfg#*/profiles/}; p=$${p%/config.json}; \
 		$(HOME)/.local/bin/multica daemon stop --profile "$$p" >/dev/null 2>&1 || true; \
 	done
-	@echo "== 删除单元文件与 guard 脚本 =="
 	@sudo rm -f /etc/systemd/system/multica-daemon.service \
 	            /etc/systemd/system/multica-daemon@.service \
 	            /etc/systemd/system/multica-node-exporter.service \
@@ -456,10 +388,7 @@ daemon-uninstall: ## Remove daemon systemd units (default + all @profile instanc
 	            /usr/local/sbin/multica-oom-guard.sh
 	@sudo systemctl daemon-reload
 	@sudo systemctl reset-failed 2>/dev/null || true
-	@if [ "$(PURGE)" = 1 ]; then rm -f $(HOME)/.local/bin/multica && echo "== 已删除 $(HOME)/.local/bin/multica（PURGE=1）=="; fi
-	@echo "== 卸载完成 =="
-	@echo "   已移除: multica-daemon.service / multica-daemon@.service 及全部实例 / multica-node-exporter / multica-oom-guard / guard 脚本"
-	@echo "   已保留: ~/.multica/（各 profile 连接配置与 token、daemon-render.mk 渲染参数）、~/multica_workspaces*/$(if $(PURGE),,、CLI 二进制 ~/.local/bin/multica)"
+	@if [ "$(PURGE)" = 1 ]; then rm -f $(HOME)/.local/bin/multica; fi
 
 # ---------- MCP (local stdio server, client installers) ----------
 ##@ MCP
@@ -483,16 +412,7 @@ mcp-uninstall: mcp-build ## Remove the multica entry from every detected client'
 	node "$(CURDIR)/apps/mcp/dist/uninstall-cli.js"
 
 # ---------- MCP HTTP (systemd service, streamable HTTP transport) ----------
-# 与上面 mcp-* 的形态不同：mcp-* 把 stdio server 注册进本机 MCP 客户端配置；
-# 这里是把 http transport 常驻托管为 systemd 服务，供远程 connector（ChatGPT
-# 等）连接。两者互不影响，可同时存在。
-#
-# 每个 POST /mcp 自带 Authorization: Bearer <PAT>；统一 MCP 审计凭据从受限文件
-# 通过 systemd LoadCredential 注入，单元与日志不包含凭据内容。
-#
-# 单实例，非 @ 模板：一台机器一般只需要一个 MCP http 端点（多端口场景可用
-# MCP_HTTP_PORT/MCP_HTTP_HOST 覆盖后重装），跟 daemon 的多 profile 并存不是
-# 同一类需求，模板化只会徒增管理面，故按简单单元处理。
+# MCP HTTP runs as a separate user service and loads its audit credential through systemd.
 MCP_HTTP_PORT ?= 8080
 MCP_HTTP_HOST ?= 127.0.0.1
 MCP_CPU_QUOTA ?= 100%
@@ -525,39 +445,38 @@ mcp-http-install: mcp-build ## Install MCP streamable-HTTP transport with a syst
 	fi; \
 	case "$(MCP_HTTP_HOST)" in \
 		127.0.0.1|localhost|::1) ;; \
-		*) echo "WARN: MCP_HTTP_HOST=$(MCP_HTTP_HOST) 非 loopback——对外暴露前请确认已置于 TLS 反代之后" ;; \
+		*) echo "WARN: Use a TLS reverse proxy before exposing MCP_HTTP_HOST=$(MCP_HTTP_HOST)" ;; \
 	esac; \
-	mkdir -p "$(MCP_HTTP_UNIT_DIR)"; \
-	$(MCP_HTTP_UNIT_RENDER) > "$(MCP_HTTP_UNIT)"; \
-	systemctl --user daemon-reload; \
-	systemctl --user enable --now multica-mcp-http.service; \
+	mkdir -p "$(MCP_HTTP_UNIT_DIR)" && \
+	$(MCP_HTTP_UNIT_RENDER) > "$(MCP_HTTP_UNIT)" && \
+	systemctl --user daemon-reload && \
+	systemctl --user enable --now multica-mcp-http.service || exit $$?; \
 	if [ "$$(loginctl show-user $$(id -un) -p Linger --value 2>/dev/null)" != "yes" ]; then \
-		echo "WARN: 当前用户未开启 Linger，注销后该服务会随会话结束停止；如需注销/重启后仍常驻，请让有权限者执行: loginctl enable-linger $$(id -un)"; \
+		echo "WARN: MCP HTTP may stop at logout. To keep it running, enable lingering for $$(id -un)."; \
 	fi; \
-	systemctl --user --no-pager --lines=0 status multica-mcp-http.service; \
-	echo "multica-mcp-http → http://$(MCP_HTTP_HOST):$(MCP_HTTP_PORT)/mcp（探活: /healthz，鉴权: Authorization: Bearer <PAT>，逐请求携带，服务端不落盘）"
+	systemctl --user --no-pager --lines=0 status multica-mcp-http.service && \
+	echo "MCP endpoint: http://$(MCP_HTTP_HOST):$(MCP_HTTP_PORT)/mcp"
 
 mcp-http-update: mcp-build ## Rebuild dist/ only, then restart the running service (unit file / port / host untouched)
 	@export XDG_RUNTIME_DIR=$${XDG_RUNTIME_DIR:-/run/user/$$(id -u)}; \
-	systemctl --user restart multica-mcp-http.service; \
+	systemctl --user restart multica-mcp-http.service && \
 	systemctl --user --no-pager --lines=0 status multica-mcp-http.service
 
 mcp-http-status: ## Read-only: systemd --user unit status for the MCP HTTP service
 	@export XDG_RUNTIME_DIR=$${XDG_RUNTIME_DIR:-/run/user/$$(id -u)}; \
-	systemctl --user --no-pager status multica-mcp-http.service 2>/dev/null || echo "multica-mcp-http.service 未安装（make mcp-http-install）"
+	systemctl --user --no-pager status multica-mcp-http.service 2>/dev/null || echo "MCP HTTP status unavailable. To install the service, run make mcp-http-install."
 
 mcp-http-uninstall: ## Remove the MCP HTTP systemd --user service only; never touches multica-daemon*, multica-oom-guard, or other systemd --user units
 	@export XDG_RUNTIME_DIR=$${XDG_RUNTIME_DIR:-/run/user/$$(id -u)}; \
 	systemctl --user disable --now multica-mcp-http.service >/dev/null 2>&1 || true; \
 	rm -f "$(MCP_HTTP_UNIT)"; \
 	systemctl --user daemon-reload; \
-	systemctl --user reset-failed 2>/dev/null || true; \
-	echo "multica-mcp-http.service 已移除（multica-daemon*、multica-oom-guard 与其他 systemd --user 单元未受影响）"
+	systemctl --user reset-failed 2>/dev/null || true
 
 # ---------- Environments ----------
 ##@ Environments
 
-# Fixed slots (RUYI-333): every command names the slot it acts on. There are
+# Fixed slots: every command names the slot it acts on. There are
 # exactly two general slots (dev1, dev2); QA verification reuses the issue's
 # own slot by handing its lease to the qa role (`make use SLOT=dev1 ...
 # handoff`). A slot's ports, database and account are fixed facts in
@@ -592,19 +511,19 @@ list: ## List every fixed slot on this machine (registered/free)
 use: check-slot ## Bind this checkout, or load a revision into a slot (ARGS="<sha>")
 	@bash scripts/dev-env.sh $(SLOT) use $(ARGS)
 
-destroy: check-slot ## Stop a slot, drop its database and account, free it
+destroy: check-slot ## Refuse slot destruction until verified data recovery is available
 	@bash scripts/dev-env.sh $(SLOT) destroy $(ARGS)
 
-orphans: check-slot ## Acceptance check: nothing of this slot survives down/destroy
+orphans: check-slot ## Report remaining slot processes, ports, worktrees, and containers
 	@bash scripts/dev-env.sh $(SLOT) orphans $(ARGS)
 
-gc: ## Collect expired qa-phase slots (and slots whose code directory is gone)
+gc: ## Report expired QA slots or slots with a missing code directory
 	@bash scripts/dev-env.sh gc $(ARGS)
 
 audit: ## Read-only bypass sweep: unregistered multica_% DBs + off-registry Multica listeners (exit 1 = findings)
 	@bash scripts/dev-env.sh audit $(ARGS)
 
-qa-clean: ## Reclaim QA leftovers (ARGS="--issue ruyi-283 --yes [--docker]"; default is a dry run)
+qa-clean: ## Report QA leftovers or return an owned QA lease
 	@bash scripts/qa-clean.sh $(ARGS)
 
 env-exec: check-slot ## Run a command with a slot's variables (ARGS="-- pnpm dev:desktop")
@@ -621,7 +540,7 @@ api-dev: ## Run only the Go backend for the current env file
 web-dev: ## Run only the Next.js dev server for the current env file
 	pnpm dev:web
 
-# Release entry for browser acceptance (RUYI-632): serves the production
+# Release entry for browser acceptance: serves the production
 # bundle produced by `scripts/e2e-release-entry.sh <slot> build` (apps/web/.next
 # must already contain BUILD_ID). The env file's FRONTEND_PORT picks the
 # listener; runtime rewrites read REMOTE_API_URL / NEXT_PUBLIC_API_URL from
@@ -640,7 +559,7 @@ android-build: ## Prebuild and compile the Android release APK (APP_ENV=producti
 	cd apps/mobile && pnpm exec dotenv -e .env.$(APP_ENV) -- cross-env APP_ENV=$(APP_ENV) expo prebuild -p android
 	cd apps/mobile/android && EXPO_NO_BUNDLE_SPLITTING=1 ./gradlew assembleRelease --build-cache --parallel --no-daemon
 
-# Dev-slot MCP Node (RUYI-428): behind the web /api/mcp rewrite. --server-url
+# Dev-slot MCP Node: behind the web /api/mcp rewrite. --server-url
 # overrides the env file's daemon-shaped ws://.../ws MULTICA_SERVER_URL with
 # the REST origin; MULTICA_MCP_PORT (slot env) picks the listener port.
 mcp-dev: ## Run only the MCP HTTP server for the current env file
@@ -707,7 +626,7 @@ db-drop: ## Permanently drop the current env's local database after confirmation
 # to run against a remote host, and refuses the main database `multica` without
 # ALLOW_MAIN_DB_DROP=1: under
 # the shared-database model a worktree env file names it by default, and
-# this target drops without a confirmation prompt (RUYI-66).
+# this target drops without a confirmation prompt.
 db-reset: ## Drop and recreate the current env's database, then re-run all migrations
 	$(REQUIRE_ENV)
 	@case "$(DATABASE_URL)" in \
@@ -779,8 +698,16 @@ server: ## Run only the Go server for the current checkout
 	@bash scripts/ensure-postgres.sh "$(ENV_FILE)"
 	cd server && go run ./cmd/server
 
-daemon: ## Restart the local agent daemon using the CLI's stored auth/session
-	@$(MAKE) multica MULTICA_ARGS="daemon restart --profile local"
+# Reject the space-separated spelling before any recipe can restart a daemon.
+# daemon-uninstall is intentionally a separate, all-profiles systemd operation.
+ifneq ($(filter daemon,$(MAKECMDGOALS)),)
+ifneq ($(filter uninstall,$(MAKECMDGOALS)),)
+$(error 'make daemon uninstall' is not supported. Use 'make daemon-uninstall' to remove all profiles)
+endif
+endif
+
+daemon: ## Restart the agent daemon (optional PROFILE)
+	@$(MAKE) multica MULTICA_ARGS="daemon restart $(if $(filter default,$(PROFILE)),,--profile $(PROFILE))"
 
 cli: ## Run the multica CLI with ARGS or MULTICA_ARGS from source
 	@$(MAKE) multica MULTICA_ARGS="$(MULTICA_ARGS)"
@@ -795,7 +722,7 @@ DATE    ?= $(shell date -u '+%Y-%m-%dT%H:%M:%SZ')
 # the slot worktree via `make -C` (scripts/dev-env.sh), and the top-level
 # `export` above would hand it this checkout's HEAD, outranking the sub-make's
 # own `COMMIT ?=` — the api binary then gets stamped with the wrong commit and
-# the identity gate kills it (RUYI-420). An explicitly provided COMMIT (command
+# the identity gate kills it. An explicitly provided COMMIT (command
 # line or environment) keeps origin `command line`/`environment` and still
 # exports, so `make up COMMIT=xyz` keeps working.
 ifeq ($(origin COMMIT),file)
@@ -803,7 +730,7 @@ unexport COMMIT
 endif
 # Windows will not execute an extensionless binary, so a source build there has
 # to name its outputs the way the target platform expects — otherwise the CLI
-# builds fine and then fails to re-exec itself as a daemon (#7255). GOOS reaches
+# builds fine and then fails to re-exec itself as a daemon. GOOS reaches
 # a build two ways: as an environment variable (`GOOS=windows make build`) and
 # as a Make variable (`make build GOOS=windows`). The top-level `export` sends
 # both forms to the recipe, so `go build` honors both and the suffix has to as
