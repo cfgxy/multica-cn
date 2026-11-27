@@ -12,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/events"
 	"github.com/multica-ai/multica/server/pkg/protocol"
+	"github.com/multica-ai/multica/server/pkg/redact"
 )
 
 // The progress card is the process view of a run: one updatable card that
@@ -183,7 +184,8 @@ func progressDemand(summary string) string {
 		}
 		visible = append(visible, field)
 	}
-	if demand := clampTerminalText(strings.Join(visible, " "), 72); demand != "" {
+	rawDemand := strings.Join(visible, " ")
+	if demand := clampTerminalText(collapseWhitespace(redact.Text(rawDemand)), 72); demand != "" {
 		return "需求：" + demand
 	}
 	return "需求：处理你的请求。"
