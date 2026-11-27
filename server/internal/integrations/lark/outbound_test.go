@@ -20,6 +20,8 @@ type fakePatcherQueries struct {
 	mu                  sync.Mutex
 	task                db.AgentTaskQueue
 	taskErr             error
+	inputMessages       []db.ChatMessage
+	inputMessagesErr    error
 	taskChannelIngested bool
 	binding             ChatSessionBinding
 	bindingErr          error
@@ -50,6 +52,9 @@ type fakePatcherQueries struct {
 
 func (f *fakePatcherQueries) GetAgentTask(ctx context.Context, id pgtype.UUID) (db.AgentTaskQueue, error) {
 	return f.task, f.taskErr
+}
+func (f *fakePatcherQueries) ListChatInputMessages(ctx context.Context, taskID pgtype.UUID) ([]db.ChatMessage, error) {
+	return f.inputMessages, f.inputMessagesErr
 }
 func (f *fakePatcherQueries) TaskHasChannelIngestedMessages(ctx context.Context, taskID pgtype.UUID) (bool, error) {
 	return f.taskChannelIngested, nil
@@ -878,14 +883,12 @@ func TestPatcherLegacyBindingFallsBackToKey(t *testing.T) {
 	}
 }
 
-// TestPatcherSendsToChatWhenNoThread verifies that a non-thread trigger
-// (no last_lark_thread_id on the binding) keeps the historical
-// chat-level send: ReplyTarget stays empty so SendTextMessage targets
-// the chat by chat_id. This is the no-behavior-change guarantee for
-// normal group / p2p chats.
-func TestPatcherSendsToChatWhenNoThread(t *testing.T) {
+// TestPatcherRepliesToTriggerInNormalGroup keeps a normal group reply anchored
+// to the invoking message without setting reply_in_thread.
+func TestPatcherRepliesToTriggerInNormalGroup(t *testing.T) {
 	p, q, api := newTestPatcher(t)
-	// binding has a message id but NO thread id → must not thread.
+	// binding has a message id but NO thread id → reply to the trigger but do
+	// not set reply_in_thread.
 	q.binding.LastMessageID = pgtype.Text{String: "om_trigger", Valid: true}
 	taskID := uuidFromString(t, "ee777777-ee77-ee77-ee77-eeeeeeeeeeee")
 
@@ -901,9 +904,25 @@ func TestPatcherSendsToChatWhenNoThread(t *testing.T) {
 	if len(api.textSent) != 1 {
 		t.Fatalf("expected one text send; got %d", len(api.textSent))
 	}
-	if api.textSent[0].ReplyTarget.IsSet() {
-		t.Errorf("non-thread trigger must NOT route through the reply endpoint; got %+v",
-			api.textSent[0].ReplyTarget)
+	got := api.textSent[0].ReplyTarget
+	if got.MessageID != "om_trigger" || got.InThread {
+		t.Errorf("normal group reply target = %+v, want {om_trigger, InThread:false}", got)
+	}
+}
+
+func TestResolveOutboundTargetUsesFirstInputWhenTriggerSummaryMissing(t *testing.T) {
+	p, q, _ := newTestPatcher(t)
+	taskID := uuidFromString(t, "ee717171-ee77-ee77-ee77-eeeeeeeeeeee")
+	q.task = db.AgentTaskQueue{ChatInputTaskID: taskID}
+	q.taskChannelIngested = true
+	q.inputMessages = []db.ChatMessage{{Content: "@TestAgent 请核对发布状态"}}
+
+	target, err := p.resolveOutboundTarget(context.Background(), taskID)
+	if err != nil {
+		t.Fatalf("resolve outbound target: %v", err)
+	}
+	if target == nil || target.triggerSummary != "@TestAgent 请核对发布状态" {
+		t.Fatalf("trigger summary fallback = %#v, want first input", target)
 	}
 }
 
