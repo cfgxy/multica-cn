@@ -15,27 +15,9 @@
 # (gc collects it); this script handles what expiry cannot: the issue-scoped
 # teardown at the end of a turn, and orphans that outlive their registration.
 #
-# Layers, from safe to destructive:
-#   1. slots whose lease/manifest names the target issue (any phase — the
-#      issue's slot may be back in dev phase after its qa handoff)
-#      -> while the Issue is active, stop served QA components but preserve the
-#         slot database, profile and daemon identity for the next QA turn;
-#         terminal Issues use `dev-env.sh <slot> destroy --yes`. Unscoped
-#         --yes runs only touch slots in qa phase that already belong to the
-#         caller's own issue; dev-phase slots have no TTL and are released at
-#         closure.
-#   2. orphan listeners: any TCP listener whose cwd is inside the legacy QA
-#      root (~/.multica/qa) or the slot home (~/.multica/slots) and whose
-#      owning slot is gone (or was just destroyed above) -> TERM then KILL,
-#      by process group. `multica daemon` processes are never touched.
-#   3. docker containers whose name/image references the target issue
-#      -> `docker rm -f` with --docker; generic (no --issue) container sweep
-#      additionally requires --docker.
-#   4. QA worktree directories (legacy QA root + slot worktree roots) are
-#      REPORTED ONLY, never deleted — they hold unmerged agent commits. Use
-#      scripts/remove-worktree.sh for those.
-#
-# Without --yes nothing is modified: everything prints as "would ...".
+# A verification window only owns a lease. Never destroy the Issue's
+# database, fixtures, profile or checkout while closing that window.
+# Unregistered listeners, containers and worktrees are report-only.
 
 set -euo pipefail
 
@@ -47,28 +29,20 @@ QA_ROOT="${MULTICA_QA_ROOT:-$HOME/.multica/qa}"
 
 usage() {
   cat <<'EOF'
-Reclaim build/QA leftovers from the shared slots and the legacy QA root (~/.multica/qa).
+Report build/QA leftovers from the shared slots and the legacy QA root (~/.multica/qa).
 
   qa-clean.sh                      # report only (dry run)
   qa-clean.sh --issue ruyi-283     # scope the sweep to one issue
   qa-clean.sh --issue ruyi-283 --yes
-                                   # preserve an active issue's slot identity;
-                                   # destroy it once the issue is terminal
+                                   # stop the managed slot; preserve Issue data
   qa-clean.sh --issue ruyi-283 --yes --docker
-                                   # also remove containers naming the issue
+                                   # also report containers naming the issue
 
-An active issue's slot is stopped via scripts/dev-env.sh <slot> down while its
-database, profile and daemon identity remain available for follow-up QA. A
-terminal issue's slot is destroyed via scripts/dev-env.sh <slot> destroy --yes
-(processes stopped, slot database + account dropped, slot freed). If the issue
-state cannot be read, the slot is preserved. Without --issue and --yes, only
-slots in qa phase whose lease names MULTICA_CALLER_OWNER are destroyed —
-everything else is reported.
-Listener processes whose cwd sits inside the QA root or the slot home are
-killed by process group — except any `multica daemon`. Worktrees are never
-deleted here; they may hold unmerged commits and are listed with their
-ahead-of-main count instead. Expired qa-phase slots without an issue scope
-are collected by `dev-env.sh gc`, not by this script.
+An owned slot is stopped without deleting its database, fixtures, profile,
+checkout or daemon identity. A QA lease may then be returned. Mutations require
+a matching MULTICA_CALLER_OWNER; --issue only scopes the operation. With --yes but
+no --issue, only QA leases owned by MULTICA_CALLER_OWNER are considered.
+Listeners, containers and worktrees found by name or path are report-only.
 EOF
 }
 
@@ -96,23 +70,7 @@ matches_issue() { # $1 = text to test (any case)
 }
 
 issue_lifecycle() { # active | terminal | unknown
-  [ -n "$issue" ] || { printf 'terminal'; return; }
-  local payload category
-  payload="$(multica issue get "$issue" --output json 2>/dev/null || true)"
-  [ -n "$payload" ] || { printf 'unknown'; return; }
-  category="$(node -e '
-    let input = "";
-    process.stdin.on("data", (chunk) => input += chunk);
-    process.stdin.on("end", () => {
-      try {
-        const issue = JSON.parse(input);
-        process.stdout.write(String(issue.status_category || issue.status || ""));
-      } catch {
-        process.exitCode = 1;
-      }
-    });
-  ' <<<"$payload" 2>/dev/null || true)"
-  case "$category" in
+  case "$(issue_status_category "$1")" in
     in_progress|in_review|todo|backlog|blocked) printf 'active' ;;
     done|cancelled) printf 'terminal' ;;
     *) printf 'unknown' ;;
@@ -124,7 +82,7 @@ ensure_slots_file
 if [ "$assume_yes" != 1 ]; then
   step "qa-clean dry run — nothing will be changed (add --yes to execute)"
 else
-  step "qa-clean: reclaiming QA leftovers (qa slots + $QA_ROOT)"
+  step "qa-clean: closing owned QA windows and reporting leftovers"
 fi
 [ -z "$issue_lc" ] || info "scoped to issue: $issue_lc"
 
@@ -137,10 +95,10 @@ while read -r slot; do
     [ -f "$SLOT_MANIFEST" ] || exit 0
     load_manifest || exit 0
     slot_issue="${ISSUE:-}"
-    if ! matches_issue "$slot_issue $SLOT_DIR"; then
+    if [ -n "$issue" ] && [ "${slot_issue,,}" != "$issue_lc" ]; then
       exit 0
     fi
-    # The issue-scoped sweep reclaims the slot whatever its phase (QA reuses
+    # The issue-scoped sweep checks the slot whatever its phase (QA reuses
     # the issue's dev slot, so the lease may be back in dev after its qa
     # handoff). An unscoped --yes sweep only takes qa-phase slots — dev-phase
     # slots have no TTL and are released at issue closure, never by a timer.
@@ -148,32 +106,30 @@ while read -r slot; do
       exit 0
     fi
     if [ "$assume_yes" != 1 ]; then
-      printf 'would destroy slot %s (issue %s, dir %s, db %s)\n' "$slot" "${slot_issue:-?}" "${DIR:-?}" "$SLOT_DB"
+      printf 'would check whether to stop slot %s (issue %s, dir %s, db %s)\n' "$slot" "${slot_issue:-?}" "${DIR:-?}" "$SLOT_DB"
       exit 0
     fi
     local_owner="${MULTICA_CALLER_OWNER:-}"
-    if [ -n "$issue_lc" ]; then
-      export MULTICA_CALLER_OWNER="${local_owner:-$issue}"
-    elif [ -n "$local_owner" ] && [ "$local_owner" != "$slot_issue" ]; then
-      printf 'skipped slot %s: held by %s, not %s (scope it with --issue)\n' "$slot" "$slot_issue" "$local_owner"
-      exit 0
-    elif [ -z "$local_owner" ]; then
-      printf 'skipped slot %s: held by %s and no MULTICA_CALLER_OWNER/--issue; nothing to destroy as\n' "$slot" "${slot_issue:-?}"
+    if [ -z "$local_owner" ] || [ "$local_owner" != "$slot_issue" ]; then
+      printf 'skipped slot %s: matching MULTICA_CALLER_OWNER required (owner: %s)\n' "$slot" "${slot_issue:-?}"
       exit 0
     fi
-    lifecycle="$(issue_lifecycle)"
-    if [ -n "$issue_lc" ] && [ "$lifecycle" = active ]; then
-      if bash "$SCRIPT_DIR/dev-env.sh" "$slot" down --components api,web,mcp,desktop; then
-        printf 'preserved active slot %s (database, profile and daemon identity retained)\n' "$slot"
-      else
-        warn "failed to stop active slot $slot; its identity was preserved"
+    lifecycle="$(issue_lifecycle "$slot_issue")"
+    if [ "$lifecycle" = unknown ]; then
+      warn "could not read Issue $slot_issue state; preserved slot $slot"
+      exit 0
+    fi
+    if [ ! -f "$SLOT_LOCK_FILE" ]; then
+      printf 'preserved %s slot %s (no active lease)\n' "$lifecycle" "$slot"
+      exit 0
+    fi
+    if bash "$SCRIPT_DIR/dev-env.sh" "$slot" down --components api,web,mcp,desktop; then
+      printf 'preserved %s slot %s (database, profile and daemon identity retained)\n' "$lifecycle" "$slot"
+      if [ "$(lease_phase)" = qa ]; then
+        bash "$SCRIPT_DIR/dev-env.sh" "$slot" lock-release
       fi
-    elif [ -n "$issue_lc" ] && [ "$lifecycle" = unknown ]; then
-      warn "could not read Issue $issue state; preserved slot $slot instead of destroying it"
-    elif bash "$SCRIPT_DIR/dev-env.sh" "$slot" destroy --yes; then
-      printf 'destroyed slot %s\n' "$slot"
     else
-      warn "failed to destroy slot $slot; its manifest was kept for retry"
+      warn "failed to stop slot $slot; its identity and lease were preserved"
     fi
   ) || true
 done <<EOF
@@ -222,21 +178,7 @@ else
   for pid in $orphans; do
     cwd="$(readlink "/proc/$pid/cwd" 2>/dev/null || echo '?')"
     desc="$(ps -o args= -p "$pid" 2>/dev/null | head -c 100 || true)"
-    if [ "$assume_yes" != 1 ]; then
-      printf 'would kill pid %s (cwd %s): %s\n' "$pid" "$cwd" "$desc"
-    else
-      pgid="$(ps -o pgid= -p "$pid" 2>/dev/null | tr -d ' ' || true)"
-      if [ -z "$pgid" ]; then
-        warn "pid $pid already exited"
-        continue
-      fi
-      kill -TERM -- "-$pgid" 2>/dev/null || true
-      sleep 3
-      if kill -0 -- "-$pgid" 2>/dev/null; then
-        kill -KILL -- "-$pgid" 2>/dev/null || true
-      fi
-      printf 'killed process group %s (pid %s, cwd %s)\n' "$pgid" "$pid" "$cwd"
-    fi
+    printf 'reported listener pid %s (cwd %s): %s\n' "$pid" "$cwd" "$desc"
   done
 fi
 
@@ -258,16 +200,8 @@ if command -v docker >/dev/null 2>&1; then
       esac
       case "$label" in *qa*) ;; *) continue ;; esac
     fi
-    if [ "$sweep_docker" != 1 ]; then
-      printf 'matched container %s (%s); add --docker to remove it on a --yes run\n' "$cname" "$cimage"
-      continue
-    fi
-    if [ "$assume_yes" != 1 ]; then
-      printf 'would remove container %s (%s)\n' "$cname" "$cimage"
-    else
-      docker rm -f "$cid" >/dev/null && printf 'removed container %s\n' "$cname" \
-        || warn "failed to remove container $cname"
-    fi
+    [ "$sweep_docker" = 1 ] || continue
+    printf 'reported container %s (%s); ownership not verified\n' "$cname" "$cimage"
   done <<EOF2
 $containers
 EOF2
@@ -332,7 +266,7 @@ if [ "$reported" = 0 ] && [ ! -d "$QA_ROOT" ] && [ ! -d "$SLOT_HOME" ]; then
   info "$QA_ROOT and $SLOT_HOME do not exist — nothing to sweep"
 fi
 if [ "$reported" != 0 ]; then
-  info "reclaim a checkout by hand: scripts/remove-worktree.sh, or rm -rf after the branch is merged"
+  info "verify Issue ownership, lifecycle and recoverability before reclaiming any reported checkout"
 fi
 
 [ "$assume_yes" = 1 ] && ok "qa-clean finished" || ok "qa-clean report finished (dry run)"

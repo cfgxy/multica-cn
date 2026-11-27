@@ -306,8 +306,9 @@ func TestBackgroundTaskSafetySlimHardPins(t *testing.T) {
 		// Resource self-cleanup (2026-09-30 incident) still applies to
 		// run-owned resources. Cross-run handoffs are pinned separately below.
 		"Stop their run-owned resources before this turn ends",
-		"`make down`/`make destroy`, `docker compose down`",
-		"scripts/qa-clean.sh --issue <issue-id> --yes",
+		"`make down`, `docker compose down` without volume removal",
+		"MULTICA_CALLER_OWNER=<issue-id> bash scripts/qa-clean.sh --issue <issue-id> --yes",
+		"Returning a QA lease does not authorize deleting Issue data, fixtures, profiles, or checkouts",
 		"Build outputs, screenshots, and QA evidence are runtime-local",
 	} {
 		if !strings.Contains(out, want) {

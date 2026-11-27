@@ -114,21 +114,21 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	// The daemon's last service inventory is a machine fact keyed by
 	// daemon_id with no workspace_id: it survives workspace teardown and is
 	// overwritten by the daemon's next report cycle (RUYI-645).
-	"daemon_service_inventory":        workspaceDeleteKeep,
+	"daemon_service_inventory": workspaceDeleteKeep,
 	// Computer records belong to the deployment/human, not the workspace.
 	// Keep bindings so their owner can uninstall an OS service even after
 	// workspace deletion (RUYI-670, ported from trustbe-cn).
-	"computer":                      workspaceDeleteKeep,
-	"computer_audit":                workspaceDeleteKeep,
-	"computer_binding":              workspaceDeleteDetach,
-	"computer_credential":           workspaceDeleteKeep,
-	"computer_operation":            workspaceDeleteKeep,
-	"computer_runtime_asset":        workspaceDeleteKeep,
-	"computer_runtime_model_config": workspaceDeleteKeep,
-	"model_key_directory_entry":     workspaceDeleteKeep,
-	"model_key_source":              workspaceDeleteKeep,
-	"runtime_config_template":       workspaceDeleteKeep,
-	"user_model_key_grant":          workspaceDeleteKeep,
+	"computer":                        workspaceDeleteKeep,
+	"computer_audit":                  workspaceDeleteKeep,
+	"computer_binding":                workspaceDeleteDetach,
+	"computer_credential":             workspaceDeleteKeep,
+	"computer_operation":              workspaceDeleteKeep,
+	"computer_runtime_asset":          workspaceDeleteKeep,
+	"computer_runtime_model_config":   workspaceDeleteKeep,
+	"model_key_directory_entry":       workspaceDeleteKeep,
+	"model_key_source":                workspaceDeleteKeep,
+	"runtime_config_template":         workspaceDeleteKeep,
+	"user_model_key_grant":            workspaceDeleteKeep,
 	"daemon_token":                    workspaceDelete,
 	"dingtalk_group_presence":         workspaceDelete,
 	"dingtalk_bot_identity":           workspaceDelete,
@@ -144,6 +144,8 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	"github_pull_request_check_suite": workspaceDelete,
 	"inbox_item":                      workspaceDelete,
 	"issue":                           workspaceDelete,
+	// The Issue delete trigger removes finished reservations.
+	"issue_reclamation": workspaceDelete,
 	// Self-evolution surfaces (RUYI-265/RUYI-305): the prompt-legislation
 	// pool, its structure baselines, retrospective and governance records,
 	// registered knowledge directories, mirror entries, daemon operation

@@ -2426,7 +2426,7 @@ func TestGatePiResumeToSessionFile(t *testing.T) {
 			}
 
 			sessionFile := filepath.Join(base, "pi-session.jsonl")
-			if err := os.WriteFile(sessionFile, []byte("{}\n"), 0o644); err != nil {
+			if err := os.WriteFile(sessionFile, []byte(fmt.Sprintf("{\"type\":\"session\",\"cwd\":%q}\n", priorDir)), 0o644); err != nil {
 				t.Fatalf("create session file: %v", err)
 			}
 
@@ -2459,6 +2459,16 @@ func TestGatePiResumeDropsUnusableSessionFile(t *testing.T) {
 		setup func(t *testing.T, path string)
 	}{
 		{name: "missing"},
+		{
+			name: "missing stored cwd",
+			setup: func(t *testing.T, path string) {
+				t.Helper()
+				header := fmt.Sprintf("{\"type\":\"session\",\"cwd\":%q}\n", filepath.Join(filepath.Dir(path), "removed-checkout"))
+				if err := os.WriteFile(path, []byte(header), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
 		{
 			name: "empty",
 			setup: func(t *testing.T, path string) {

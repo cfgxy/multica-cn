@@ -1524,6 +1524,14 @@ type IssueReaction struct {
 	CreatedAt   pgtype.Timestamptz `json:"created_at"`
 }
 
+type IssueReclamation struct {
+	IssueID    pgtype.UUID        `json:"issue_id"`
+	DaemonID   string             `json:"daemon_id"`
+	OwnerID    pgtype.UUID        `json:"owner_id"`
+	TokenHash  []byte             `json:"token_hash"`
+	FinishedAt pgtype.Timestamptz `json:"finished_at"`
+}
+
 type IssueSourceContext struct {
 	ID               pgtype.UUID        `json:"id"`
 	WorkspaceID      pgtype.UUID        `json:"workspace_id"`

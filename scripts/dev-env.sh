@@ -2,7 +2,7 @@
 # Local development environments as fixed, lease-protected slots.
 #
 #   scripts/dev-env.sh dev1 up                 # start the slot (api + web)
-#   scripts/dev-env.sh dev1 up --skip-auto-gc  # start without collecting other slots
+#   scripts/dev-env.sh dev1 up --skip-auto-gc  # start without reporting expired slots
 #   scripts/dev-env.sh dev1 up C=api,web       # pick the components
 #   scripts/dev-env.sh dev1 use <sha>          # load a revision into the slot
 #   scripts/dev-env.sh dev1 handoff --to qa    # dev -> QA verification handover
@@ -11,7 +11,7 @@
 #   scripts/dev-env.sh audit                   # bypass sweep: stray multica_% dbs + servers
 #   scripts/dev-env.sh dev1 down               # stop the processes, keep the data (before lock-release)
 #   scripts/dev-env.sh dev1 orphans            # leftover procs/ports/worktrees
-#   scripts/dev-env.sh dev1 destroy            # stop, then drop slot db + account
+#   scripts/dev-env.sh dev1 destroy            # blocked until verified recovery is available
 #
 # The slot model (RUYI-333) replaces the dynamic name+offset allocator: every
 # slot's ports, database, account, directories and RESOURCE BUDGET are FIXED
@@ -328,9 +328,8 @@ write_manifest_value() {
 }
 
 # A manifest only carries the keys that existed when it was written; defaults
-# must stay safe for the destructive verbs: an empty DB_NAME never satisfies
-# env_file_agrees_on_database, an empty DESKTOP_USER_DATA_DIR never satisfies
-# the expected-path guard in destroy.
+# must stay safe for the destructive verbs: an empty DB_NAME does not satisfy
+# start-time database validation.
 load_manifest() {
   [ -f "$SLOT_MANIFEST" ] || return 1
   # shellcheck disable=SC1090
@@ -392,6 +391,7 @@ require_lease() {
     die "Slot $SLOT has no active lease (already released or never acquired) — nothing to stop. Run down while the lease is held, then free the slot with '$0 $SLOT lock-release'."
   fi
 
+  require_resource_owner "$owner"
   local current="" phase=""
   if [ -f "$SLOT_LOCK_FILE" ]; then
     # shellcheck disable=SC1090
@@ -411,11 +411,7 @@ require_lease() {
   fi
 
   if [ -n "$current" ] && [ "$current" != "$owner" ]; then
-    # gc collecting an expired slot runs destroy under the dead lease; that is
-    # the one sanctioned bypass — everything else goes through lock-recover.
-    if [ "${MULTICA_SLOT_GC_INTERNAL:-}" != "1" ]; then
-      die "Slot $SLOT is held by issue $current (caller: $owner). Inspect with '$0 $SLOT lock-status'; take over with '$0 $SLOT lock-recover' once that issue is no longer in_progress."
-    fi
+    die "Slot $SLOT is held by issue $current (caller: $owner). Inspect with '$0 $SLOT lock-status'."
   fi
 
   MANIFEST_ISSUE="$owner"
@@ -478,6 +474,14 @@ issue_status() {
   '
 }
 
+require_resource_owner() {
+  [ -f "$SLOT_MANIFEST" ] || return 0
+  local resource_issue
+  resource_issue="$(manifest_env_field ISSUE)"
+  [ -n "$resource_issue" ] || die "Slot $SLOT has unknown resource ownership; verify the existing data before reuse."
+  [ "$resource_issue" = "$1" ] || die "Slot $SLOT is held by issue $resource_issue (caller: $1); its resources must be destroyed before reassignment."
+}
+
 effective_lease_issue() {
   local issue
   issue="$(lease_field OWNER_ISSUE || true)"
@@ -487,11 +491,36 @@ effective_lease_issue() {
   printf '%s' "$issue"
 }
 
+# Check the persisted resource owner, not the current lease caller.
+issue_status_category() {
+  [ -n "$1" ] || return 1
+  local payload
+  payload="$(multica issue get "$1" --output json 2>/dev/null)" || return 1
+  node -e '
+    const issue = JSON.parse(require("fs").readFileSync(0, "utf8"));
+    const status = issue.status_category || issue.status;
+    if (typeof status !== "string" || !status) process.exit(1);
+    process.stdout.write(status);
+  ' <<<"$payload" 2>/dev/null
+}
+
+issue_terminal() {
+  case "$(issue_status_category "$1")" in done|cancelled) return 0 ;; *) return 1 ;; esac
+}
+
 cmd_lock_status() {
   local issue role at phase
   issue="$(effective_lease_issue)"
   if [ -z "$issue" ]; then
-    printf '%s: free (no lease, not registered)\n' "$SLOT"
+    if [ -f "$SLOT_MANIFEST" ]; then
+      printf '%s: registered with unknown resource ownership\n' "$SLOT"
+    else
+      printf '%s: free (no lease, not registered)\n' "$SLOT"
+    fi
+    return 0
+  fi
+  if [ ! -f "$SLOT_LOCK_FILE" ]; then
+    printf '%s: no active lease; resources held by issue %s\n' "$SLOT" "$issue"
     return 0
   fi
   role="$(lease_field OWNER_ROLE || printf 'unknown')"
@@ -550,6 +579,7 @@ cmd_handoff() {
     . "$SLOT_MANIFEST"
     current="${ISSUE:-}"
   fi
+  require_resource_owner "$owner"
   [ -n "$current" ] || die "Slot $SLOT is free. Acquire it with '$0 $SLOT use' before handing it off."
   if [ "$current" != "$owner" ]; then
     die "Slot $SLOT is held by issue $current (caller: $owner). Only the holding issue may hand the slot off."
@@ -615,13 +645,10 @@ cmd_lock_release() {
     fi
   fi
   rm -f "$SLOT_LOCK_FILE"
-  # Closing the window clears the tenancy, not just the lease file: the
-  # manifest's ISSUE/PHASE/TTL fields are the fallback every gate, takeover
-  # and display reads once the lock file is gone, so leaving the old holder
-  # behind kept released slots "held by issue" for everyone else (RUYI-431).
+  # Closing the window drops the lease, not ownership of the database and checkout.
   if [ -f "$SLOT_MANIFEST" ]; then
     load_manifest || true
-    MANIFEST_ISSUE=""
+    MANIFEST_ISSUE="$ISSUE"
     PHASE="dev"
     TTL_HOURS=0
     EXPIRES_AT=""
@@ -634,6 +661,7 @@ cmd_lock_recover() {
   local owner
   owner="$(caller_owner)"
   [ -n "$owner" ] || die "MULTICA_CALLER_OWNER is not set. Recovering a lease must name the calling issue."
+  require_resource_owner "$owner"
   local issue
   issue="$(effective_lease_issue)"
   if [ -z "$issue" ] || [ "$issue" = "$owner" ]; then
@@ -650,6 +678,7 @@ cmd_lock_recover() {
     ok "lease on $SLOT is now held by $owner"
     return 0
   fi
+  [ ! -f "$SLOT_MANIFEST" ] || die "Slot $SLOT still contains resources belonging to $issue; destroy them before takeover."
   local status
   if ! status="$(issue_status "$issue")"; then
     die "Cannot verify the status of $issue (multica CLI unavailable or issue unknown); takeover refused."
@@ -1125,20 +1154,6 @@ database_state() {
   else
     printf 'missing'
   fi
-}
-
-# Two sources before a drop (the RUYI-66 discipline, slot-shaped): the
-# registry manifest AND the env file the application actually ran from must
-# both name the slot database. The main database can never agree — it is not
-# a slot database, and slot_name_guards refuses before any SQL is built.
-env_file_agrees_on_database() {
-  local declared url_db
-  [ -f "$SLOT_ENV_FILE" ] || return 1
-  declared="$(env_file_field POSTGRES_DB)"
-  [ -n "$declared" ] || return 1
-  url_db="$(database_name_from_url "$(env_file_field DATABASE_URL)")"
-  [ -n "$url_db" ] || return 1
-  [ "$declared" = "$SLOT_DB" ] && [ "$url_db" = "$SLOT_DB" ]
 }
 
 # -------------------------------------------------------------- components ---
@@ -1932,7 +1947,7 @@ ${C_GREEN}✓ Slot ${SLOT} ready.${C_OFF}
 
   Inspect     scripts/dev-env.sh ${SLOT} status
   Stop        scripts/dev-env.sh ${SLOT} down       (keeps the database, restarts in seconds)
-  Delete      scripts/dev-env.sh ${SLOT} destroy    (drops the slot database and account)
+  Release     scripts/dev-env.sh ${SLOT} lock-release    (retains Issue data)
 EOF
 }
 
@@ -2201,202 +2216,21 @@ cmd_down() {
   printf '\n%s✓ %s stopped.%s Database, profile and code binding kept — up restarts in seconds.%s\n' "$C_GREEN" "$SLOT" "$C_OFF" "$C_OFF"
 }
 
-# A slot worktree may hold a QA session's uncommitted work or a checked-out
-# branch; neither may vanish behind destroy's back. Detached + clean trees hold
-# no unique commits (they live in the source repository), so they are the only
-# removable shape — and the recycle guard (RUYI-594) proves it per tree before
-# destroy proceeds: sole-reference commits block, stash blocks or is noted by
-# topology, and git that cannot be read blocks too (fail-closed — an
-# unreadable tree used to scan as "empty output"). Every scan, pass or not,
-# lands an evidence file under ~/.multica/recycle-evidence/ answering "what
-# did the guard see" after the fact.
-slot_worktrees_removable() {
-  local wt
-  [ -d "$SLOT_WORKTREE_ROOT" ] || return 0
-  for wt in "$SLOT_WORKTREE_ROOT"/*/; do
-    [ -d "$wt" ] || continue
-    [ -e "$wt/.git" ] || continue
-    if [ -n "$(git -C "$wt" symbolic-ref -q HEAD 2>/dev/null || true)" ]; then
-      warn "worktree $wt is on a branch; destroy refuses to remove it."
-      return 1
-    fi
-    # .env.worktree is slot-system-owned state (RUYI-632: the materialized
-    # E2E env, gitignored) — it must not read as an uncommitted change here
-    # or destroy would refuse every slot worktree from now on.
-    if [ -n "$(git -C "$wt" status --porcelain -- . ':!.env.worktree' 2>/dev/null | head -n 1)" ]; then
-      warn "worktree $wt has uncommitted changes; destroy refuses to remove it."
-      return 1
-    fi
-    RG_TOOL="dev-env destroy"
-    if recycle_guard_scan_worktree "$wt" slot-worktree 0; then
-      if [ -n "$RG_NOTES" ]; then
-        local note
-        while IFS= read -r note; do info "worktree $wt: $note"; done <<< "$RG_NOTES"
-      fi
-      if [ -n "$RG_EVIDENCE_FILE" ]; then
-        info "recycle evidence: $RG_EVIDENCE_FILE"
-      fi
-    else
-      warn "recycle guard blocks removing worktree $wt:"
-      local reason
-      while IFS= read -r reason; do warn "  $reason"; done <<< "$RG_REASONS"
-      warn "  preserve the work (push, branch, or bundle), then re-run destroy once with MULTICA_RECYCLE_OVERRIDE=1"
-      if [ -n "$RG_EVIDENCE_FILE" ]; then
-        warn "  evidence: $RG_EVIDENCE_FILE"
-      fi
-      return 1
-    fi
-  done
-  return 0
-}
-
-remove_slot_worktrees() {
-  local wt
-  for wt in "$SLOT_WORKTREE_ROOT"/*/; do
-    [ -d "$wt" ] || continue
-    [ -e "$wt/.git" ] || continue
-    git -C "$wt" worktree remove --force "$wt" >/dev/null 2>&1 || rm -rf "$wt"
-    ok "removed worktree $wt"
-  done
-  rmdir "$SLOT_WORKTREE_ROOT" 2>/dev/null || true
-}
-
 cmd_destroy() {
-  local assume_yes=0 reply failures=0
   while [ $# -gt 0 ]; do
     case "$1" in
-      --yes|-y) assume_yes=1; shift ;;
+      --yes|-y) shift ;;
       -*) die "Unknown flag for destroy: $1" ;;
       *) die "Unexpected argument for destroy: $1 (the slot is the first argument: dev-env.sh $SLOT destroy)" ;;
     esac
   done
-  require_lease
-
+  [ -n "$(caller_owner)" ] || die "MULTICA_CALLER_OWNER is required to destroy a slot."
   [ -f "$SLOT_MANIFEST" ] || die "Slot $SLOT is not registered; nothing to destroy (clear a stray lease with lock-release)."
-  load_manifest || true
+  load_manifest || return 1
   bind_paths
 
-  if [ "$assume_yes" != 1 ]; then
-    printf 'Destroy %s? This stops its processes, drops database %s and account %s, and removes %s. [y/N] ' \
-      "$SLOT" "$SLOT_DB" "$SLOT_ACCOUNT" "$SLOT_DIR"
-    read -r reply || reply=n
-    case "$reply" in y|Y|yes|YES) ;; *) printf 'Cancelled.\n'; return 0 ;; esac
-  fi
-
-  export DATABASE_URL="$(env_file_field DATABASE_URL)" POSTGRES_DB="$SLOT_DB"
-  step "Destroying $SLOT"
-  # The watchdog first: it must not observe the teardown as a budget breach
-  # and fight the teardown for the process groups.
-  stop_watchdog
-  local comp
-  for comp in $ALL_COMPONENTS; do
-    if ! stop_component "$comp"; then failures=$((failures + 1)); fi
-  done
-
-  # Drop only on agreement, and only a slot-shaped database. Guard order:
-  # slot_name_guards refuses the main database and any off-pattern name before
-  # a single statement is built.
-  slot_name_guards
-  if ! command -v docker >/dev/null 2>&1; then
-    warn "docker not found; $SLOT_DB was left in place."
-    failures=$((failures + 1))
-  elif ! container_running; then
-    warn "Nothing answered for container $SLOT_PG_CONTAINER; $SLOT_DB was left in place."
-    failures=$((failures + 1))
-  elif env_file_agrees_on_database; then
-    if db_admin_psql postgres -v ON_ERROR_STOP=1 -c "DROP DATABASE IF EXISTS \"${SLOT_DB}\" WITH (FORCE)" >/dev/null; then
-      ok "dropped database $SLOT_DB"
-    else
-      warn "failed to drop database $SLOT_DB; keeping the manifest"
-      failures=$((failures + 1))
-    fi
-    # Scratch databases the slot account minted at runtime (integration tests
-    # create throwaway databases) would keep DROP ROLE from succeeding. Only
-    # databases the account itself owns are candidates, so other slots and the
-    # main database are unreachable here by construction; the name guards are
-    # the belt to that suspenders.
-    local scratch
-    while IFS= read -r scratch; do
-      [ -n "$scratch" ] || continue
-      case "$scratch" in
-        "$MAIN_DATABASE_NAME"|postgres|template0|template1|multica_dev[12])
-          warn "refusing to drop suspect database $scratch (protected name owned by $SLOT_ACCOUNT?)" ;;
-        *)
-          if db_admin_psql postgres -v ON_ERROR_STOP=1 -c "DROP DATABASE IF EXISTS \"$scratch\" WITH (FORCE)" >/dev/null; then
-            ok "dropped scratch database $scratch (owned by $SLOT_ACCOUNT)"
-          else
-            warn "failed to drop scratch database $scratch"
-            failures=$((failures + 1))
-          fi ;;
-      esac
-    done < <(db_admin_psql postgres -tAc "SELECT datname FROM pg_database WHERE pg_get_userbyid(datdba)='${SLOT_ACCOUNT}' AND datname <> '${SLOT_DB}'" 2>/dev/null || true)
-    if db_admin_psql postgres -v ON_ERROR_STOP=1 -c "DROP ROLE IF EXISTS \"${SLOT_ACCOUNT}\"" >/dev/null; then
-      ok "dropped account $SLOT_ACCOUNT"
-    else
-      warn "failed to drop account $SLOT_ACCOUNT; keeping the manifest"
-      failures=$((failures + 1))
-    fi
-  else
-    warn "refusing to drop database $SLOT_DB: the manifest and $SLOT_ENV_FILE must both name it before a drop"
-    info "Compare $SLOT_ENV_FILE with the manifest, resolve by hand, then re-run to release the slot."
-    failures=$((failures + 1))
-  fi
-
-  if rm -rf "$PROFILE_DIR"; then
-    ok "removed CLI profile $SLOT_PROFILE"
-  else
-    warn "failed to remove CLI profile $SLOT_PROFILE"
-    failures=$((failures + 1))
-  fi
-
-  local expected_workspaces="$SLOT_WORKSPACES_ROOT"
-  if [ "$SLOT_WORKSPACES_ROOT" != "$expected_workspaces" ]; then
-    warn "refusing to remove unexpected workspaces root $SLOT_WORKSPACES_ROOT (expected $expected_workspaces)"
-    failures=$((failures + 1))
-  elif rm -rf "$SLOT_WORKSPACES_ROOT"; then
-    ok "removed daemon workspaces $SLOT_WORKSPACES_ROOT"
-  else
-    warn "failed to remove daemon workspaces $SLOT_WORKSPACES_ROOT"
-    failures=$((failures + 1))
-  fi
-
-  local expected_desktop_data="$(desktop_user_data_dir "$SLOT_DESKTOP_SUFFIX")"
-  if [ -n "$DESKTOP_USER_DATA_DIR" ] && [ "$DESKTOP_USER_DATA_DIR" != "$expected_desktop_data" ]; then
-    warn "refusing to remove unexpected Desktop userData $DESKTOP_USER_DATA_DIR"
-    failures=$((failures + 1))
-  elif [ -d "$expected_desktop_data" ]; then
-    if rm -rf "$expected_desktop_data"; then
-      ok "removed Desktop userData $expected_desktop_data"
-    else
-      warn "failed to remove Desktop userData $expected_desktop_data"
-      failures=$((failures + 1))
-    fi
-  fi
-
-  if [ -f "${DESKTOP_ENV_FILE:-}" ] \
-    && grep -Fqx "# Managed by scripts/dev-env.sh for slot ${SLOT}." "$DESKTOP_ENV_FILE"; then
-    if rm -f "$DESKTOP_ENV_FILE"; then
-      ok "removed managed Desktop env file"
-    else
-      warn "failed to remove $DESKTOP_ENV_FILE"
-      failures=$((failures + 1))
-    fi
-  fi
-
-  if ! slot_worktrees_removable; then
-    warn "slot worktrees under $SLOT_WORKTREE_ROOT are not removable; keeping the manifest so destroy can retry after they are handled."
-    failures=$((failures + 1))
-  fi
-
-  if [ "$failures" -ne 0 ]; then
-    die "$SLOT was only partially destroyed ($failures cleanup failure(s)). Its manifest and lease were kept so destroy can retry."
-  fi
-
-  remove_slot_worktrees
-  rm -rf "$SLOT_DIR"
-  rm -f "$SLOT_LOCK_FILE"
-  ok "released slot $SLOT"
-  printf '\n%s✓ %s destroyed.%s\n' "$C_GREEN" "$SLOT" "$C_OFF"
+  issue_terminal "${ISSUE:-}" || die "Refusing to destroy $SLOT: its resource Issue (${ISSUE:-unknown}) is not confirmed terminal."
+  die "Refusing to destroy $SLOT: no verified recovery for its database and fixtures. Stop the slot and release its QA lease without deleting Issue data."
 }
 
 cmd_status() {
@@ -2673,19 +2507,9 @@ cmd_gc() {
         [ "$(now_epoch)" -lt "$expiry_epoch" ] || reason="it expired at $EXPIRES_AT"
       fi
       [ -n "$reason" ] || exit 0
+      printf '%s retained: %s; expiry does not authorize deletion of Issue data\n' "$slot" "$reason"
       if [ "$dry_run" = 1 ]; then
-        printf '%s would be collected: %s\n' "$slot" "$reason"
         recycle_guard_gc_dry_scan
-      else
-        printf '%s: %s\n' "$slot" "$reason"
-        if ! MULTICA_SLOT_GC_INTERNAL=1 MULTICA_CALLER_OWNER="${MULTICA_CALLER_OWNER:-gc}" \
-          bash "$REPO_ROOT/scripts/dev-env.sh" "$slot" destroy --yes; then
-          if [ "$automatic" = 1 ]; then
-            warn "automatic cleanup of $slot failed; its manifest was kept for retry"
-          else
-            exit 1
-          fi
-        fi
       fi
     )
   done <<EOF
@@ -2905,7 +2729,7 @@ Fixed-slot local development environments (fact source: scripts/slots.json).
   dev-env.sh <slot> markdown-reader modern|legacy  # live, slot-local renderer switch
   dev-env.sh <slot> lock-release [--force]
   dev-env.sh <slot> lock-recover          # take over after the lease issue left in_progress
-  dev-env.sh <slot> destroy [--yes]
+  dev-env.sh <slot> destroy [--yes]     # refuses without verified data recovery
   dev-env.sh <slot> orphans [--json]      # acceptance: nothing of this slot survives
   dev-env.sh <slot> exec    -- <command> [args...]
   dev-env.sh <slot> logs    [component] [lines]
@@ -2920,7 +2744,7 @@ at ~/.multica/slots/<slot>/env and verified before every start. The slot lease
 carries a role phase — dev (development) or qa (verification) — with exactly
 one holder at a time; `handoff --to` moves it atomically within the same
 issue (dev -> qa -> release at closure). qa phase is the only TTL'd phase
-(gc collects after 24h idle); dev phase has no timer. A dual-server test
+(gc reports expiry after 24h idle); dev phase has no timer. A dual-server test
 window is the one shape where ONE issue holds BOTH slots: arm each slot's
 lease with `use --phase qa`, run the two servers, then close the window by
 releasing both leases with `lock-release` right away — a qa-phase holder may
@@ -2928,6 +2752,8 @@ release while its issue is still in_progress (the dev phase releases only at
 issue closure). Verbs that stop things act on a held lease — the order is
 `down` first, `lock-release` second; `down` on a slot with no active lease
 is refused, so it can never resurrect a released lease (RUYI-712).
+Releasing a lease does not transfer or delete its Issue data. `destroy`
+is disabled until database and fixture recovery can be verified.
 `audit` reports Multica-shaped activity outside this model:
 unregistered multica_% databases on the shared instance, and listeners off
 the registered ports whose DATABASE_URL names an unregistered multica_%
