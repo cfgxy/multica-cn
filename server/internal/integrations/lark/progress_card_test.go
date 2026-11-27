@@ -181,10 +181,10 @@ func TestProgressCardTerminalStatesRetainStatusHeaderAndStructuredSummary(t *tes
 	}
 }
 
-// TestProgressCardRunningEntriesAreCompactGreyPlainText pins the in-progress
-// visual contract: tool calls, results, and errors are all compact, muted, and
-// un-emphasized while retaining literal URLs and failure markers.
-func TestProgressCardRunningEntriesAreCompactGreyPlainText(t *testing.T) {
+// TestProgressCardRunningEntriesKeepResultDotsColored pins the mixed running
+// card contract: thinking/tool-use/errors remain compact grey plain_text, while
+// tool results use compact lark_md so the outcome dot is outside the grey span.
+func TestProgressCardRunningEntriesKeepResultDotsColored(t *testing.T) {
 	failed := false
 	render, err := NewDefaultProgressRenderer().RenderProgress(ProgressInput{
 		AgentName: "TestAgent",
@@ -198,28 +198,54 @@ func TestProgressCardRunningEntriesAreCompactGreyPlainText(t *testing.T) {
 	if err != nil {
 		t.Fatalf("render running card: %v", err)
 	}
-	if strings.Contains(render.JSON, "**") || strings.Contains(render.JSON, `"tag":"markdown"`) {
-		t.Fatalf("running process entries must not use markdown emphasis: %s", render.JSON)
-	}
 	doc := decodeCard(t, render.JSON)
 	body, _ := doc["body"].(map[string]any)
 	elements, _ := body["elements"].([]any)
+	var sawResult bool
 	for _, element := range elements {
 		div, ok := element.(map[string]any)
 		if !ok || div["tag"] != "div" {
 			continue
 		}
 		text, _ := div["text"].(map[string]any)
+		content, _ := text["content"].(string)
+		if strings.Contains(content, "工具结果") {
+			sawResult = true
+			if text["tag"] != "lark_md" || text["text_size"] != "notation" {
+				t.Fatalf("tool result must be compact lark_md; got %#v", text)
+			}
+			if _, hasGlobalGrey := text["text_color"]; hasGlobalGrey {
+				t.Fatalf("tool result must not globally grey the status dot; got %#v", text)
+			}
+			want := "<font color='grey'>工具结果 · </font>🔴<font color='grey'> Read · permission denied</font>"
+			if content != want {
+				t.Errorf("tool result content = %q, want %q", content, want)
+			}
+			continue
+		}
 		if text["tag"] != "plain_text" || text["text_size"] != "notation" || text["text_color"] != "grey" {
-			t.Fatalf("running entry must be compact grey plain text; got %#v", text)
+			t.Fatalf("non-result entry must remain compact grey plain text; got %#v", text)
 		}
 	}
-	rows := progressPlainTextRows(t, render.JSON)
-	joined := strings.Join(rows, "\n")
-	for _, want := range []string{"工具调用 · Read · https://example.test/log", "工具结果 · 🔴 Read · permission denied", "错误 · network timeout"} {
-		if !strings.Contains(joined, want) {
-			t.Errorf("running rows %q missing %q", rows, want)
-		}
+	if !sawResult {
+		t.Fatal("running card must contain a tool-result row")
+	}
+}
+
+// TestProgressCardToolResultEscapesDynamicText ensures the one lark_md row
+// cannot turn a tool name or summary into Card markup.
+func TestProgressCardToolResultEscapesDynamicText(t *testing.T) {
+	success := true
+	element := renderProgressEntryElement(ProgressEntry{
+		Kind: ProgressEntryToolResult, Tool: "Read<unsafe>", Text: "x</font><at id='all'>", Success: &success,
+	})
+	text, _ := element["text"].(map[string]any)
+	content, _ := text["content"].(string)
+	if strings.Contains(content, "Read<unsafe>") || strings.Contains(content, "</font><at") {
+		t.Fatalf("dynamic result text must not inject lark_md markup: %q", content)
+	}
+	if !strings.Contains(content, "Read&lt;unsafe&gt;") || !strings.Contains(content, "x&lt;/font&gt;&lt;at id=&#39;all&#39;&gt;") {
+		t.Errorf("dynamic result text must be HTML-escaped: %q", content)
 	}
 }
 
@@ -1065,12 +1091,10 @@ func TestProgressEntryFromPayloadDerivesToolText(t *testing.T) {
 	}
 }
 
-// TestProgressCardRendersToolTitleAndResultSummary pins the two information
-// layers the issue asks for: a tool_use row reads 「工具调用 · tool · 标题」 and a
-// tool_result row 「工具结果 · 圆点 tool · 预览」. A failed result keeps its red
-// dot beside the summary — the preview must not mask the error state — and
-// every process row stays compact grey plain text.
-func TestProgressCardRendersToolTitleAndResultSummary(t *testing.T) {
+// TestProgressCardToolResultDotFollowsSuccess verifies all three outcome dots
+// use lark_md without a global colour filter, while their descriptions remain
+// inside the grey font span.
+func TestProgressCardToolResultDotFollowsSuccess(t *testing.T) {
 	failed := false
 	ok := true
 	render, err := NewDefaultProgressRenderer().RenderProgress(ProgressInput{
@@ -1088,19 +1112,21 @@ func TestProgressCardRendersToolTitleAndResultSummary(t *testing.T) {
 		t.Fatalf("render progress card: %v", err)
 	}
 	rows := progressPlainTextRows(t, render.JSON)
-	want := []string{
-		"工具调用 · Bash · git status",
-		"工具结果 · 🟢 Bash · clean tree",
-		"工具结果 · 🔴 Bash · boom",
-		"工具调用 · Read",
-		"工具结果 · ⚪ Read",
+	if len(rows) != 5 {
+		t.Fatalf("expected five tool rows, got %+v", rows)
 	}
-	if len(rows) != len(want) {
-		t.Fatalf("expected %d tool rows, got %d: %+v", len(want), len(rows), rows)
+	if rows[0] != "工具调用 · Bash · git status" || rows[3] != "工具调用 · Read" {
+		t.Errorf("tool-use rows = %q, want compact plain text rows", rows)
 	}
-	for i := range want {
-		if rows[i] != want[i] {
-			t.Errorf("row %d = %q, want %q", i, rows[i], want[i])
+	wantResultRows := []string{
+		"<font color='grey'>工具结果 · </font>🟢<font color='grey'> Bash · clean tree</font>",
+		"<font color='grey'>工具结果 · </font>🔴<font color='grey'> Bash · boom</font>",
+		"<font color='grey'>工具结果 · </font>⚪<font color='grey'> Read</font>",
+	}
+	for i, want := range wantResultRows {
+		got := rows[[]int{1, 2, 4}[i]]
+		if got != want {
+			t.Errorf("tool-result row %d = %q, want %q", i, got, want)
 		}
 	}
 }
@@ -1132,7 +1158,8 @@ func TestProgressCardCarriesToolTitleAndResultSummary(t *testing.T) {
 	if !strings.Contains(last, "工具调用 · Bash · git status") {
 		t.Errorf("card must carry the compact tool title; got %s", last)
 	}
-	if !strings.Contains(last, "工具结果 · ⚪ Bash · clean tree") {
-		t.Errorf("card must carry the compact unwrapped result preview; got %s", last)
+	rows := progressPlainTextRows(t, last)
+	if len(rows) != 2 || rows[1] != "<font color='grey'>工具结果 · </font>⚪<font color='grey'> Bash · clean tree</font>" {
+		t.Errorf("card must carry the compact unwrapped, colour-safe result preview; rows=%q", rows)
 	}
 }
