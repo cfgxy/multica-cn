@@ -117,6 +117,9 @@ FORCE=1 make worktree-env
 An environment is the ports, CLI profile and processes that belong to one
 checkout. It is a named object: it can be listed, inspected and deleted. The
 database is shared unless a test explicitly points `DATABASE_URL` elsewhere.
+For fixed slots, stop managed QA services and return the lease as its owning
+Issue. Lease return does not delete or transfer the database, fixtures, profile,
+or checkout.
 
 ```bash
 make up                      # start this checkout's environment (api + web)
@@ -124,8 +127,8 @@ make up C=api,web,daemon     # choose the components
 make status                  # what is running, and whether it is yours
 make list                    # every environment on this machine
 make down                    # stop the processes, keep the data
-make destroy                 # stop, preserve multica, then remove profile and slot
-make gc                      # collect expired environments or ones whose checkout is gone
+make destroy                 # refuses without verified data recovery
+make gc                      # report expired QA slots or missing code directories
 ```
 
 Components are `api` (Go backend), `web` (Next.js), `daemon` (agent daemon) and
@@ -439,8 +442,8 @@ This writes a marked `apps/desktop/.env.development.local` pointing at this
 environment's backend, starts Electron with the renderer port and app name from
 the environment registry, and waits until that renderer is actually serving.
 Several checkouts can therefore run Desktop side by side without maintaining a
-second path-derived identity. `make destroy` removes the marked env file and
-this environment's Electron userData. Direct `pnpm dev:desktop` still uses its
+second path-derived identity. Stopping the fixed slot or returning its QA lease
+preserves Electron userData. Direct `pnpm dev:desktop` still uses its
 path-derived fallback when it is run outside `make up`.
 
 Log in with `dev@localhost` and `888888`.

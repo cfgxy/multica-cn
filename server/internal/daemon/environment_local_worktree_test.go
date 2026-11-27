@@ -60,37 +60,23 @@ func TestRunTaskRetainsAndReusesLocalWorktreeWithSeparateRunRoots(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	workdir, ok := shouldReusePriorWorkdir(second, assignment, d.cfg.WorkspacesRoot)
-	if !ok {
-		t.Fatal("retained checkout cannot be validated")
-	}
-	root := managedCodeRoot(d.cfg.WorkspacesRoot, workdir)
-	parent, err := os.OpenRoot(d.cfg.WorkspacesRoot)
+	claim, err := execenv.ClaimIssueCheckout(t.Context(), d.cfg.WorkspacesRoot, second.IssueID, localWorktreeParamsForTask(second, assignment, ""), nil)
 	if err != nil {
 		t.Fatal(err)
-	}
-	defer parent.Close()
-	canonicalBase, err := filepath.EvalSymlinks(d.cfg.WorkspacesRoot)
-	if err != nil {
-		t.Fatal(err)
-	}
-	relative, err := filepath.Rel(canonicalBase, root)
-	if err != nil {
-		t.Fatal(err)
-	}
-	claim, _, err := execenv.LockEnvRootForReuse(parent, relative, root)
-	if err != nil || claim == nil {
-		t.Fatalf("could not hold checkout lease: %v", err)
 	}
 	defer claim.Release()
 	third := second
 	third.ID = "task-third"
-	forked, err := d.runTask(context.Background(), third, "claude", 0, d.logger)
-	if err != nil {
-		t.Fatal(err)
+	ctx, cancel := context.WithTimeout(t.Context(), 150*time.Millisecond)
+	defer cancel()
+	if _, err := d.runTask(ctx, third, "claude", 0, d.logger); err == nil || ctx.Err() == nil {
+		t.Fatalf("contending Run did not wait for cancellation: %v", err)
 	}
-	if sameDir(t, forked.WorkDir, next.WorkDir) {
-		t.Fatal("concurrent continuation shared the locked checkout")
+	claim.Release()
+	third.ID = "task-fourth"
+	continued, err := d.runTask(t.Context(), third, "claude", 0, d.logger)
+	if err != nil || continued.WorkDir != next.WorkDir {
+		t.Fatalf("Run did not reuse the released checkout: %q, %v", continued.WorkDir, err)
 	}
 }
 
@@ -116,6 +102,7 @@ func TestRunTaskRestoresAndReattachesColdLocalCheckout(t *testing.T) {
 	}
 	first := leaderReuseTestTask("task-first")
 	first.IsLeaderTask = false
+	first.IssueID, first.ChatSessionID = "", "archive-chat"
 	first.ProjectResources = []ProjectResourceData{{ID: "resource", ResourceType: "local_directory", ResourceRef: ref}}
 	result, err := d.runTask(t.Context(), first, "claude", 0, d.logger)
 	if err != nil {

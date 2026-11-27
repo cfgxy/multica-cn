@@ -1028,6 +1028,25 @@ func (c *Client) getLegacyIssueGCChecks(ctx context.Context, issueIDs []string) 
 	return results
 }
 
+func (c *Client) issueReclamation(ctx context.Context, workspace, issue, token string, finish bool) error {
+	credential := c.knowledgeToken(workspace)
+	if credential == "" {
+		return errors.New("daemon workspace credential unavailable")
+	}
+	action := "begin"
+	if finish {
+		action = "finish"
+	}
+	path := fmt.Sprintf("/api/daemon/workspaces/%s/issues/%s/reclamation/%s", url.PathEscape(workspace), url.PathEscape(issue), action)
+	err := c.postJSONWithToken(ctx, path, credential, map[string]string{"token": token}, nil, http.StatusNoContent)
+	var reqErr *requestError
+	if finish && errors.As(err, &reqErr) && reqErr.StatusCode == http.StatusNotFound && strings.Contains(reqErr.Body, "issue not found") {
+		// The Issue cannot be deleted while a reservation is active.
+		return nil
+	}
+	return err
+}
+
 // GetIssueGCCheck returns the status and updated_at of an issue for GC decisions.
 func (c *Client) GetIssueGCCheck(ctx context.Context, issueID string) (*IssueGCStatus, error) {
 	var resp IssueGCStatus
@@ -1446,7 +1465,7 @@ func (c *Client) getJSONWithToken(ctx context.Context, path, token string, respB
 
 // postJSONWithToken is getJSONWithToken's write counterpart, for the daemon's
 // task-scoped calls that carry a body.
-func (c *Client) postJSONWithToken(ctx context.Context, path, token string, reqBody, respBody any) error {
+func (c *Client) postJSONWithToken(ctx context.Context, path, token string, reqBody, respBody any, expectedStatus ...int) error {
 	encoded, err := json.Marshal(reqBody)
 	if err != nil {
 		return err
@@ -1467,7 +1486,7 @@ func (c *Client) postJSONWithToken(ctx context.Context, path, token string, reqB
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode >= 400 {
+	if resp.StatusCode >= 400 || (len(expectedStatus) != 0 && resp.StatusCode != expectedStatus[0]) {
 		data, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 		return &requestError{Method: http.MethodPost, Path: path, StatusCode: resp.StatusCode, Body: strings.TrimSpace(string(data))}
 	}

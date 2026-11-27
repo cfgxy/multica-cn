@@ -162,6 +162,7 @@ type Config struct {
 	BackpressureWindowSize      int                   // smoothing window in samples before thresholds are evaluated on the mean (default: 6)
 	GCEnabled                   bool                  // enable periodic workspace garbage collection (default: true)
 	EnvironmentRecycleEnabled   bool                  // enable daemon environment lifecycle policy and automatic recycling
+	IssueCheckoutReclaimEnabled bool                  // opt in to deleting archived Issue checkouts
 	EnvironmentArchiveEnabled   bool                  // preserve and archive idle environments before reclamation
 	EnvironmentArchiveTTL       time.Duration         // minimum idle terminal-run retention before automatic archival
 	EnvironmentRecycleInterval  time.Duration         // parent-lifecycle scan interval
@@ -738,6 +739,7 @@ func LoadConfig(overrides Overrides) (Config, error) {
 		GCInterval:                      gcInterval,
 		GCTTL:                           gcTTL,
 		GCCompletedTaskTTL:              gcCompletedTaskTTL,
+		IssueCheckoutReclaimEnabled:     boolFromEnv("MULTICA_ISSUE_CHECKOUT_RECLAIM_ENABLED", false),
 		EnvironmentArchiveEnabled:       boolFromEnv("MULTICA_ENVIRONMENT_ARCHIVE_ENABLED", true),
 		EnvironmentArchiveTTL:           environmentArchiveTTL,
 		EnvironmentRecycleInterval:      environmentRecycleInterval,

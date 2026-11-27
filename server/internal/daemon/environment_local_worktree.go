@@ -67,5 +67,5 @@ func localWorktreeParamsForTask(task Task, local *localDirectoryAssignment, root
 		name = task.Agent.Name
 	}
 	repositoryScope, _ := execenv.RepositoryScopeFingerprint(convertReposForEnv(task.Repos), convertProjectResourcesForEnv(task.ProjectResources))
-	return execenv.LocalWorktreeParams{LocalPath: local.AbsPath, EnvRoot: root, AgentName: name, TaskID: task.ID, ConversationKey: key, ConversationID: id, WorkspaceID: task.WorkspaceID, AgentID: task.AgentID, RetainCheckout: true, ProjectID: task.ProjectID, SquadID: task.SquadID, RuntimeID: task.RuntimeID, RepositoryScope: repositoryScope}
+	return execenv.LocalWorktreeParams{LocalPath: local.AbsPath, EnvRoot: root, AgentName: name, TaskID: task.ID, ConversationKey: key, ConversationID: id, WorkspaceID: task.WorkspaceID, AgentID: task.AgentID, RetainCheckout: true, IssueID: task.IssueID, ProjectID: task.ProjectID, SquadID: task.SquadID, RuntimeID: task.RuntimeID, RepositoryScope: repositoryScope}
 }

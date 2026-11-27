@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
@@ -6715,7 +6716,7 @@ func sameExistingDir(a, b string) bool {
 func gateResumeToReachableSession(task *Task, taskCtx *execenv.TaskContextForEnv, provider, envWorkDir string, sessionHomeReachable bool, taskLog *slog.Logger) bool {
 	var reachable bool
 	if providerUsesPiSessionFile(provider) {
-		reachable = piSessionFilePresent(task.PriorSessionID)
+		reachable = piSessionFilePresent(task.PriorSessionID) && !piSessionCWDUnavailable(task.PriorSessionID)
 	} else {
 		// Compare the directories, not the spelling. Reuse runs in the canonical
 		// path it validated and locked, which need not be character-identical to
@@ -6762,6 +6763,26 @@ func piSessionFilePresent(sessionID string) bool {
 	}
 	info, err := os.Stat(sessionID)
 	return err == nil && info.Mode().IsRegular() && info.Size() > 0
+}
+
+// piSessionCWDUnavailable checks the first JSONL record without loading the
+// transcript. Unknown headers are left to the backend for compatibility.
+func piSessionCWDUnavailable(path string) bool {
+	f, err := os.Open(path)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+	s := bufio.NewScanner(f)
+	var header struct {
+		Type string `json:"type"`
+		CWD  string `json:"cwd"`
+	}
+	if !s.Scan() || json.Unmarshal(s.Bytes(), &header) != nil || header.Type != "session" || !filepath.IsAbs(header.CWD) {
+		return false
+	}
+	info, err := os.Stat(header.CWD)
+	return errors.Is(err, os.ErrNotExist) || (err == nil && !info.IsDir())
 }
 
 // sessionHomeReachable reports whether a session recorded by a prior task on
@@ -8296,7 +8317,36 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		}
 	}
 	envReused := false
-	priorClaim, priorWorkDir, lockedPriorInfo, reusable, reuseErr := d.lockReusablePriorEnvRoot(ctx, task, localAssignment, envClaim.RootDir())
+	var issueCheckout *execenv.IssueCheckoutClaim
+	var priorClaim *execenv.EnvRootClaim
+	var priorWorkDir string
+	var lockedPriorInfo os.FileInfo
+	var reusable bool
+	var reuseErr error
+	if task.IssueID != "" && localAssignment.UsesWorktree() {
+		params := localWorktreeParamsForTask(task, localAssignment, "")
+		issueCheckout, err = execenv.ClaimRestorableIssueCheckout(prepareCtx, d.cfg.WorkspacesRoot, task.IssueID, params, func() {
+			_ = d.client.MarkTaskWaitingLocalDirectory(prepareCtx, task.ID, "waiting for Issue checkout")
+		}, d.cfg.Profile, d.cfg.ServerBaseURL, taskLog)
+		if err != nil {
+			return TaskResult{}, asEnvironmentSetupFailure(err)
+		}
+		defer issueCheckout.Release()
+		d.markActiveEnvRoot(issueCheckout.Root)
+		defer d.unmarkActiveEnvRoot(issueCheckout.Root)
+		if err := issueCheckout.MarkWorker(); err != nil {
+			return TaskResult{}, asEnvironmentSetupFailure(err)
+		}
+		defer func() {
+			if !errors.Is(returnErr, agent.ErrCancellationUnconfirmed) && !errors.Is(returnErr, agent.ErrDetached) {
+				if err := issueCheckout.ClearWorker(); err != nil {
+					taskLog.Warn("could not clear Issue checkout worker marker", "error", err)
+				}
+			}
+		}()
+	} else {
+		priorClaim, priorWorkDir, lockedPriorInfo, reusable, reuseErr = d.lockReusablePriorEnvRoot(ctx, task, localAssignment, envClaim.RootDir())
+	}
 	if reuseErr != nil {
 		// Cancelled while waiting for the previous run to let go of its
 		// directory. Ending here IS the behaviour: falling through would
@@ -8427,6 +8477,9 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 				return TaskResult{}, asEnvironmentSetupFailure(err)
 			}
 			worktreeParams := localWorktreeParamsForTask(task, localAssignment, envClaim.RootDir())
+			if issueCheckout != nil {
+				worktreeParams.EnvRoot = issueCheckout.Root
+			}
 			prepParams.LocalWorktree = &worktreeParams
 			// Take the per-path mutex for the snapshot alone, then hand it
 			// straight back — long enough to read a consistent tree, short
@@ -8673,7 +8726,7 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 			if finalizeErr == nil {
 				// A retained worktree is still the daemon-managed continuation
 				// target; it is not the user's configured directory.
-				if localAssignment != nil && !env.LocalWorktree.RetainCheckout {
+				if localAssignment != nil && !env.LocalWorktree.RetainCheckout && outcome.PreservedPath == "" {
 					taskResult.DurableWorkDir = localAssignment.AbsPath
 				}
 				return
@@ -8777,6 +8830,11 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 					"could not remove the runtime's own files from the worktree before committing: %w", cleanupErr))
 			}
 		}()
+	}
+	if issueCheckout != nil {
+		if err := issueCheckout.MarkPrepared(taskLog); err != nil {
+			return TaskResult{}, asEnvironmentSetupFailure(err)
+		}
 	}
 	taskTempDir, taskTempLock, err := ensureTaskTempDir(env.RootDir, task.WorkspaceID, task.ID)
 	if err != nil {

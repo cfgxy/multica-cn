@@ -3046,6 +3046,28 @@ func TestFinalizeBudgetExcludesOversizedKeepsSmallDeliverables(t *testing.T) {
 	}
 }
 
+func TestFinalizeBudgetRetainsIssueCheckout(t *testing.T) {
+	repo := newTestRepo(t)
+	wt := prepareForTest(t, repo)
+	wt.IssueID = "issue-1"
+	wt.RetainCheckout = true
+	oversized := filepath.Join(wt.Path, "payload", "large.bin")
+	writeBinary(t, oversized, 2<<20)
+	writeFile(t, filepath.Join(wt.Path, "result.txt"), "result\n")
+	setStagingBudget(t, 2000, 1<<20)
+
+	outcome := finalizeOK(t, wt)
+	if outcome.PreservedPath != wt.Path || len(outcome.Excluded) != 1 || outcome.Excluded[0].AsidePath != filepath.Dir(oversized) {
+		t.Fatalf("finalize outcome = %+v; want exclusion preserved in %s", outcome, wt.Path)
+	}
+	if _, err := os.Stat(oversized); err != nil {
+		t.Fatal(err)
+	}
+	if got := gitRun(t, wt.Path, "show", wt.Branch+":result.txt"); got != "result" {
+		t.Fatalf("result on branch = %q", got)
+	}
+}
+
 // Greedy direction: excluding the largest entry first must rescue the smaller
 // ones, not the other way around.
 func TestFinalizeBudgetGreedyExcludesLargestFirst(t *testing.T) {

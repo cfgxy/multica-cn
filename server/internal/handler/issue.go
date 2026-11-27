@@ -3718,7 +3718,7 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 	if err != nil {
-		if writeIssueStatusRaceError(w, err) {
+		if writeIssueReclamationConflict(w, err) || writeIssueStatusRaceError(w, err) {
 			return
 		}
 		if h.writeInactiveTaskError(w, r, err) {
@@ -4140,6 +4140,9 @@ func (h *Handler) DeleteIssue(w http.ResponseWriter, r *http.Request) {
 
 	deleteResult, err := h.deleteIssueAndCollectAttachmentURLs(r.Context(), issue, nil)
 	if err != nil {
+		if writeIssueReclamationConflict(w, err) {
+			return
+		}
 		writeError(w, http.StatusInternalServerError, "failed to delete issue")
 		return
 	}

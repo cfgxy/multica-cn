@@ -74,9 +74,9 @@ make up SLOT=dev1      # Start slot dev1's environment (C=api,web,daemon,desktop
 make status SLOT=dev1  # Show what is running and prove it is this environment
 make list              # List every fixed slot on this machine (dev1, dev2)
 make down SLOT=dev1    # Stop the processes, keep the database
-make destroy SLOT=dev1 # Stop, then drop the slot database and free the slot
-make orphans SLOT=dev1 # Acceptance: nothing of this slot survives down/destroy
-make gc                # Collect expired qa-phase slots
+make destroy SLOT=dev1 # Refuses without verified data recovery
+make orphans SLOT=dev1 # Report remaining slot resources
+make gc                # Report expired QA slots
 make dev               # Prepare and start the current checkout in the foreground
 make check             # Run the complete local verification workflow
 make build             # Build the server, CLI, and migrate binaries
@@ -89,23 +89,23 @@ account (`<slot>_app`) and directories are fixed facts in `scripts/slots.json`,
 so two environments can never drift into sharing a database. The slot's env
 file is generated under `~/.multica/slots/<slot>/` and re-verified before every
 start; write commands require the owning issue via `MULTICA_CALLER_OWNER`, and
-a slot held by an in-progress issue refuses takeover (`lock-status` /
-`lock-recover` manage the handover). It verifies the database through
+a different issue cannot take over a slot with retained resources, even
+after the lease is released. It verifies the database through
 `DATABASE_URL` and the backend through `GET /health`, which reports `pid`,
 `commit` and `started_at` — a 200 alone would also come from a leftover
 process on the same port. The slot lease carries a role phase:
 `scripts/dev-env.sh <slot> handoff --to qa` moves it atomically from
 development to QA verification (and back with `--to dev`) within the same
-issue. Only the qa phase has a TTL (24h idle, collected by `make gc`), and it
+issue. Only the qa phase has a TTL (24h idle, reported by `make gc`), and it
 closes its verification window with `lock-release` the moment verification
 ends — while the issue is still in progress, and without waiting for issue
 closure (a dual-server test window may even hold both slots at once). The dev
 phase keeps the closure-only rule: it is handed back at issue closure via
-`lock-release` (`--force` overrides). `make destroy
-SLOT=<slot>` removes the database, CLI profile, daemon workspaces, Desktop
-userData and slot directory; a failed deletion keeps the manifest for retry,
-and `make orphans SLOT=<slot>` afterwards proves nothing of the slot survives
-(processes, ports, worktrees, containers — exit 1 lists what is left). Each
+`lock-release` (`--force` overrides lease timing only). Stop managed services
+before releasing the lease. A matching `MULTICA_CALLER_OWNER` can also use
+`make qa-clean ARGS="--yes"` to return owned QA leases. The database, fixtures,
+profile and checkout remain owned by the original issue. `make destroy
+SLOT=<slot>` refuses without verified data recovery. Each
 slot runs inside the resource budget from `scripts/slots.json`
 (`resource_budget`): 4 pinned CPU cores per slot, api ≤ 768MB, web ≤ 8192MB,
 daemon/desktop ≤ 256MB, enforced at launch (`GOMEMLIMIT` / `NODE_OPTIONS`) and

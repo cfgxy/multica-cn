@@ -258,7 +258,7 @@ func CaptureEnvironmentArchive(ctx context.Context, request EnvironmentArchiveRe
 
 func validArchivedRoot(relative string) bool {
 	parts := strings.Split(filepath.ToSlash(relative), "/")
-	return filepath.IsLocal(relative) && len(parts) == 2 && !strings.HasPrefix(parts[0], ".") && parts[0] != "" && parts[1] != "" && parts[1] != "." && parts[1] != ".."
+	return filepath.IsLocal(relative) && len(parts) == 2 && (!strings.HasPrefix(parts[0], ".") || (parts[0] == issueCheckoutRegistry && validEnvironmentArchiveID(parts[1]))) && parts[0] != "" && parts[1] != "" && parts[1] != "." && parts[1] != ".."
 }
 
 // ReadEnvironmentArchive validates identity and paths before exposing a manifest.

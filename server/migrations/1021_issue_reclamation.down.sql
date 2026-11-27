@@ -1,0 +1,10 @@
+DROP TRIGGER trg_issue_reclamation_catalog_delete ON issue_status;
+DROP TRIGGER trg_issue_reclamation_catalog_update ON issue_status;
+DROP FUNCTION guard_issue_reclamation_catalog();
+DROP TRIGGER trg_issue_reclamation_run ON agent_task_queue;
+DROP FUNCTION guard_issue_reclamation_run();
+DROP TRIGGER trg_issue_reclamation_delete ON issue;
+DROP TRIGGER trg_issue_reclamation_status ON issue;
+DROP FUNCTION guard_issue_reclamation_mutation();
+DROP FUNCTION reserve_issue_reclamation(uuid, uuid, text, uuid, bytea, boolean);
+DROP TABLE issue_reclamation;

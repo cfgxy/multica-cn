@@ -64,6 +64,9 @@ func (d *Daemon) cleanupManagedWorktree(ctx context.Context, request worktreeCle
 	if !validScopedTaskStatus(ctx, owner, status) {
 		return "scope_changed"
 	}
+	if execenv.ProtectLocalWorktree(path) {
+		return "retained"
+	}
 	if request.automatic {
 		meta, err := execenv.ReadGCMeta(path)
 		if err != nil || !meta.AutoCleanup || meta.LocalDirectory {

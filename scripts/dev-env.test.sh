@@ -117,6 +117,7 @@ case "\$1" in
     shift 3   # exec -i multica-postgres-1
     exec "$fake_bin/psql" "\$@"
     ;;
+  ps) printf '%s\n' "\${FAKE_DOCKER_PS:-}" ;;
   compose) exit 0 ;;
   *) exit 0 ;;
 esac
@@ -129,6 +130,7 @@ cat > "$fake_bin/multica" <<MCEOF
 printf '%s\n' "\$*" >>"$multica_log"
 if [ "\${1:-}" = issue ] && [ "\${2:-}" = get ]; then
   f="$state/issue-\${3:-}"
+  if [ -f "\$f.json" ]; then cat "\$f.json"; exit 0; fi
   if [ -f "\$f" ]; then printf '{"status":"%s"}\n' "\$(cat "\$f")"; exit 0; fi
   exit 1
 fi
@@ -459,7 +461,7 @@ printf 'in_progress' > "$state/issue-$issue_a"
 status=0
 MULTICA_CALLER_OWNER=$issue_b dev_env dev1 lock-recover > "$out" 2>&1 || status=$?
 [ "$status" -ne 0 ] || fail "takeover while the holding issue is in_progress must be refused"
-require_contains "$out" "in_progress"
+require_contains "$out" "resources must be destroyed before reassignment"
 
 status=0
 MULTICA_CALLER_OWNER=$issue_b dev_env dev1 lock-release > "$out" 2>&1 || status=$?
@@ -474,49 +476,28 @@ require_contains "$out" "still in_progress"
 MULTICA_CALLER_OWNER=$issue_a dev_env dev1 lock-release --force > "$out" 2>&1 || fail "lock-release --force must succeed"
 [ ! -f "$MULTICA_SLOTS_HOME/dev1/.slot-lock" ] || fail "lock-release --force must clear the lease file"
 
-# And the tenancy with it: the manifest's ISSUE is the fallback every gate,
-# takeover and display reads once the lease file is gone, so a release that
-# leaves it behind keeps the slot "held by issue" for everyone else
-# (RUYI-479/RUYI-477 residue).
-[ -z "$(bash -c 'source "$1"; printf %s "$ISSUE"' _ "$manifest")" ] || fail "lock-release must clear the manifest lease issue"
+grep -q "^ISSUE=$issue_a$" "$manifest" || fail "release must preserve resource ownership"
 dev_env dev1 lock-status > "$out" 2>&1 || fail "lock-status must work after release"
-require_contains "$out" "free (no lease, not registered)"
-require_absent "$out" "$issue_a"
-
-# Once the issue left in_progress, the next claimant may take over — and the
-# takeover rewrites the manifest's issue too, so the original claimant is now
-# the foreign one.
+require_contains "$out" "no active lease; resources held by issue $issue_a"
 printf 'done' > "$state/issue-$issue_a"
-MULTICA_CALLER_OWNER=$issue_b dev_env dev1 lock-recover > "$out" 2>&1 || fail "lock-recover after the issue left in_progress must succeed"
-grep -q "OWNER_ISSUE=$issue_b" "$MULTICA_SLOTS_HOME/dev1/.slot-lock" || fail "after takeover the lease must name the new issue"
-grep -q "^ISSUE=$issue_b" "$MULTICA_SLOTS_HOME/dev1/manifest.env" || fail "after takeover the manifest must adopt the new issue"
-
-status=0
-MULTICA_CALLER_OWNER=$issue_a dev_env dev1 lock-recover > "$out" 2>&1 || status=$?
-[ "$status" -ne 0 ] || fail "takeover of an in_progress foreign lease must be refused"
 printf 'done' > "$state/issue-$issue_b"
-MULTICA_CALLER_OWNER=$issue_a dev_env dev1 lock-recover > "$out" 2>&1 || fail "taking the slot back must succeed once the foreign issue closed"
-grep -q "^ISSUE=$issue_a" "$MULTICA_SLOTS_HOME/dev1/manifest.env" || fail "the manifest must record the current claimant"
+if MULTICA_CALLER_OWNER=$issue_b dev_env dev1 lock-recover > "$out" 2>&1; then fail "terminal resources must not be reassigned without teardown"; fi
+MULTICA_CALLER_OWNER=$issue_a dev_env dev1 lock-recover > "$out" 2>&1 || fail "same Issue must recover its own resources"
 
 # ---------------------------------------------------------------------------
-# The normal release path (no --force) on a qa-phase lease: a closed issue
-# releasing its verification window must leave nothing behind. The qa handoff
-# armed PHASE/TTL/EXPIRES_AT in the manifest, and with the lease file gone
-# that manifest is the only identity left — the half-way release that kept it
-# stranded RUYI-479 and RUYI-477.
+# The normal QA release clears the lease and TTL, not the resource owner.
 # ---------------------------------------------------------------------------
 MULTICA_CALLER_OWNER=$issue_b dev_env dev2 use > "$out" 2>&1 || fail "setup: bind dev2 for the release path"
 MULTICA_CALLER_OWNER=$issue_b dev_env dev2 handoff --to qa > "$out" 2>&1 || fail "setup: arm the qa phase on dev2"
 d2="$MULTICA_SLOTS_HOME/dev2/manifest.env"
 grep -q '^PHASE=qa' "$d2" || fail "setup: the qa phase must be armed before release"
 MULTICA_CALLER_OWNER=$issue_b dev_env dev2 lock-release > "$out" 2>&1 || fail "a closed issue must release its qa lease without --force"
-[ -z "$(bash -c 'source "$1"; printf %s "$ISSUE"' _ "$d2")" ] || fail "lock-release must clear the manifest lease issue"
+grep -q "^ISSUE=$issue_b$" "$d2" || fail "QA release must preserve resource ownership"
 [ "$(bash -c 'source "$1"; printf %s "$PHASE"' _ "$d2")" = dev ] || fail "lock-release must return the manifest phase to dev"
 [ -z "$(bash -c 'source "$1"; printf %s "$EXPIRES_AT"' _ "$d2")" ] || fail "lock-release must clear the armed expiry"
 [ "$(bash -c 'source "$1"; printf %s "$TTL_HOURS"' _ "$d2")" = 0 ] || fail "lock-release must clear the qa TTL"
 dev_env dev2 lock-status > "$out" 2>&1 || fail "lock-status must work after release"
-require_contains "$out" "free (no lease, not registered)"
-require_absent "$out" "$issue_b"
+require_contains "$out" "no active lease; resources held by issue $issue_b"
 
 # ---------------------------------------------------------------------------
 # RUYI-712: down on a released slot must refuse, not resurrect the lease.
@@ -541,7 +522,7 @@ hist_after=0
 [ -f "$history" ] && hist_after="$(wc -l < "$history")"
 [ "$hist_after" = "$hist_before" ] || fail "a refused down must not append lease history (RUYI-712)"
 dev_env dev1 lock-status > "$out" 2>&1 || fail "lock-status must work after the refused down"
-require_contains "$out" "free"
+require_contains "$out" "no active lease; resources held by issue $issue_a"
 
 # The normal order keeps working: down while the lease is held, release after.
 MULTICA_CALLER_OWNER=$issue_a dev_env dev1 use > "$out" 2>&1 || fail "RUYI-712: re-acquiring dev1 must succeed"
@@ -570,8 +551,8 @@ MULTICA_CALLER_OWNER=$issue_a dev_env dev1 use > "$out" 2>&1 || fail "RUYI-712 c
 # ---------------------------------------------------------------------------
 status=0
 MULTICA_CALLER_OWNER=$issue_a dev_env dev2 handoff --to qa > "$out" 2>&1 || status=$?
-[ "$status" -ne 0 ] || fail "handoff of a free slot must be refused"
-require_contains "$out" "is free"
+[ "$status" -ne 0 ] || fail "handoff of a released foreign slot must be refused"
+require_contains "$out" "held by issue $issue_b"
 
 status=0
 MULTICA_CALLER_OWNER=$issue_a dev_env dev1 handoff > "$out" 2>&1 || status=$?
@@ -585,7 +566,7 @@ MULTICA_CALLER_OWNER=$issue_a dev_env dev1 handoff --to staging > "$out" 2>&1 ||
 status=0
 MULTICA_CALLER_OWNER=$issue_b dev_env dev1 handoff --to qa > "$out" 2>&1 || status=$?
 [ "$status" -ne 0 ] || fail "a foreign issue must not hand the slot off"
-require_contains "$out" "Only the holding issue may hand"
+require_contains "$out" "held by issue $issue_a"
 
 MULTICA_CALLER_OWNER=$issue_a dev_env dev1 handoff --to qa --note "dev complete" > "$out" 2>&1 || fail "dev->qa handoff must succeed"
 grep -q '^PHASE=qa' "$MULTICA_SLOTS_HOME/dev1/.slot-lock" || fail "the lease must carry the qa phase after handoff"
@@ -744,16 +725,18 @@ if printf '%s' "$sql" | grep -Eq 'DROP DATABASE|DROP ROLE'; then
   fail "up must never drop anything"
 fi
 
+printf 'done' > "$state/issue-RUYI-594"
 # The one-call override must not change the default: ordinary up still runs
-# auto-GC and collects an expired slot before initializing its own target.
+# auto-GC and reports an expired slot before initializing its own target.
 register_slot dev2 RUYI-594 "$tmp_dir/expired-dev2" 24 "$past_iso" qa
 lines_before="$(wc -l < "$psql_log")"
 status=0
 MULTICA_CALLER_OWNER=$issue_a dev_env dev1 up --components api > "$out" 2>&1 || status=$?
 [ "$status" -ne 0 ] || fail "default up with stubbed components is expected to stop at component start"
-[ ! -d "$MULTICA_SLOTS_HOME/dev2" ] || fail "default up must continue to collect the expired other slot"
+require_contains "$out" "dev2 retained"
+[ -d "$MULTICA_SLOTS_HOME/dev2" ] || fail "default up deleted the expired other slot"
 sql="$(tail -n +"$((lines_before + 1))" "$psql_log")"
-printf '%s' "$sql" | grep -qF 'DROP DATABASE IF EXISTS "multica_dev2"' || fail "default up must run the existing auto-GC path"
+if printf '%s' "$sql" | grep -Eq 'DROP DATABASE|DROP ROLE'; then fail "auto-GC must not issue destructive SQL"; fi
 
 # ---------------------------------------------------------------------------
 # exec: the slot's own variables, without the runtime's production MULTICA_*.
@@ -784,178 +767,25 @@ node -e '
 ' < "$out" || fail "status --json content mismatch"
 
 # ---------------------------------------------------------------------------
-# destroy: two-source drop guard, then the real teardown.
-# ---------------------------------------------------------------------------
+# Neither the recycle override nor the Git guard kill switch authorizes
+# destruction without a verified recovery path for Issue data.
+printf 'done' > "$state/issue-$issue_a"
 lines_before="$(wc -l < "$psql_log")"
-status=0
-MULTICA_CALLER_OWNER=$issue_a dev_env dev1 destroy --yes > "$out" 2>&1 || status=$?
-[ "$status" -eq 0 ] || { cat "$out" >&2; fail "destroy of a consistent slot must succeed"; }
-sql="$(tail -n +"$((lines_before + 1))" "$psql_log")"
-printf '%s' "$sql" | grep -qF 'DROP DATABASE IF EXISTS "multica_dev1" WITH (FORCE)' || fail "destroy must drop the slot database"
-printf '%s' "$sql" | grep -qF 'DROP ROLE IF EXISTS "dev1_app"' || fail "destroy must drop the slot account"
-[ ! -d "$MULTICA_SLOTS_HOME/dev1" ] || fail "destroy must remove the slot directory"
-
-dev_env dev1 status > "$out" 2>&1 || fail "status after destroy must work"
-require_contains "$out" "not registered"
-
-# Two-source guard: the manifest AND the env file must both name the slot
-# database before a drop is built. An env renamed to the main database must
-# keep the slot alive and drop nothing.
-MULTICA_CALLER_OWNER=$issue_a dev_env dev2 use > "$out" 2>&1 || fail "setup: bind dev2"
-printf 'POSTGRES_DB=multica\nPOSTGRES_USER=multica\nPOSTGRES_PASSWORD=x\nDATABASE_URL=postgres://multica:x@localhost:5432/multica?sslmode=disable\n' > "$MULTICA_SLOTS_HOME/dev2/env"
-lines_before="$(wc -l < "$psql_log")"
-status=0
-MULTICA_CALLER_OWNER=$issue_a dev_env dev2 destroy --yes > "$out" 2>&1 || status=$?
-[ "$status" -ne 0 ] || fail "destroy must refuse when the env file names a different database"
-require_contains "$out" "must both name it before a drop"
-[ -f "$MULTICA_SLOTS_HOME/dev2/manifest.env" ] || fail "a refused destroy must keep the manifest for retry"
-[ "$(wc -l < "$psql_log")" -eq "$lines_before" ] || fail "a refused destroy must issue no SQL"
-
-# Repairing the env lets the destroy finish.
-cat > "$MULTICA_SLOTS_HOME/dev2/env" <<'ENVEOF'
-POSTGRES_DB=multica_dev2
-POSTGRES_USER=dev2_app
-POSTGRES_PASSWORD=x
-DATABASE_URL=postgres://dev2_app:x@localhost:5432/multica_dev2?sslmode=disable
-ENVEOF
-# Scratch databases minted at runtime by the slot account (integration tests)
-# must be collected before DROP ROLE, but a protected name must never be
-# dropped even if the ownership catalog somehow lists it.
-printf 'multica_v034_upgrade_123\nmultica\n' > "$state/scratch-dev2_app"
-lines_before="$(wc -l < "$psql_log")"
-MULTICA_CALLER_OWNER=$issue_a dev_env dev2 destroy --yes > "$out" 2>&1 || fail "destroy after repairing the env must succeed"
-[ ! -d "$MULTICA_SLOTS_HOME/dev2" ] || fail "destroy must remove the slot directory"
-sql="$(tail -n +"$((lines_before + 1))" "$psql_log")"
-printf '%s' "$sql" | grep -qF 'DROP DATABASE IF EXISTS "multica_v034_upgrade_123" WITH (FORCE)' || fail "destroy must collect scratch databases owned by the slot account"
-require_contains "$out" "refusing to drop suspect database multica"
-if printf '%s' "$sql" | grep -qF 'DROP DATABASE IF EXISTS "multica" WITH'; then
-  fail "destroy must never drop the main database, not even as a scratch candidate"
-fi
-
-# ---------------------------------------------------------------------------
-# Worktree safety: a branch checkout or dirty worktree blocks destroy; a clean
-# detached worktree is the only removable shape.
-# ---------------------------------------------------------------------------
-MULTICA_CALLER_OWNER=$issue_a dev_env dev1 use "$sha1" > "$out" 2>&1 || fail "setup: load dev1"
-wt1="$MULTICA_SLOTS_HOME/dev1/worktrees/ruyi-333"
-git -C "$wt1" checkout -q -b feature-under-test
-status=0
-MULTICA_CALLER_OWNER=$issue_a dev_env dev1 destroy --yes > "$out" 2>&1 || status=$?
-[ "$status" -ne 0 ] || fail "destroy must refuse to remove a branch worktree"
-require_contains "$out" "on a branch"
-[ -f "$MULTICA_SLOTS_HOME/dev1/manifest.env" ] || fail "a blocked destroy must keep the manifest"
-
-git -C "$wt1" checkout -q --detach "$sha1"
-MULTICA_CALLER_OWNER=$issue_a dev_env dev1 destroy --yes > "$out" 2>&1 || fail "destroy of a detached clean worktree slot must succeed"
-[ ! -d "$MULTICA_SLOTS_HOME/dev1" ] || fail "destroy must remove the slot directory"
-[ ! -d "$wt1" ] || fail "destroy must remove the slot worktree"
-
-# ---------------------------------------------------------------------------
-# Recycle guard (RUYI-594) on the destroy path. A worktree holding the last
-# reference to a commit blocks destroy with an itemised evidence file; the
-# override releases exactly that verdict once and records it; the kill switch
-# restores the legacy unconditional behaviour; a carrier git cannot read
-# (source repository gone) is fail-closed, never "empty output"; and
-# gc --dry-run produces the same evidence (dry_run: true) without deleting
-# anything. Evidence lands in the sandboxed HOME's recycle-evidence root.
-# ---------------------------------------------------------------------------
-ev_root="$HOME/.multica/recycle-evidence"
-ev_count() { ls "$ev_root" 2>/dev/null | wc -l | tr -d ' '; }
-
-MULTICA_CALLER_OWNER=$issue_a dev_env dev1 use "$sha1" > "$out" 2>&1 || fail "guard: setup must load dev1"
-wtg="$MULTICA_SLOTS_HOME/dev1/worktrees/ruyi-333"
-git -C "$wtg" checkout -q --detach
-echo guarded > "$wtg/guarded.txt"
-git -C "$wtg" add guarded.txt
-git -C "$wtg" commit -q -m "sole reference work"
-status=0
-MULTICA_CALLER_OWNER=$issue_a dev_env dev1 destroy --yes > "$out" 2>&1 || status=$?
-[ "$status" -ne 0 ] || fail "guard must refuse to destroy a worktree holding sole-reference commits"
-require_contains "$out" "recycle guard blocks"
-[ -f "$MULTICA_SLOTS_HOME/dev1/manifest.env" ] || fail "a guard-blocked destroy must keep the manifest for retry"
-[ -d "$wtg" ] || fail "a guard-blocked destroy must keep the worktree"
-ev_file="$(sed -n 's/.*evidence: //p' "$out" | tail -1)"
-[ -f "$ev_file" ] || fail "the blocked destroy must name an existing evidence file"
-grep -q '^verdict: blocked' "$ev_file" || fail "evidence must record verdict: blocked"
-grep -q '^dry_run: false' "$ev_file" || fail "a live destroy scan must be marked dry_run: false"
-grep -q '^kind: slot-worktree' "$ev_file" || fail "evidence must record the carrier kind"
-grep -q '^topology: linked' "$ev_file" || fail "a slot worktree scans as linked (shared .git survives)"
-grep -q 'sole_ref_list' "$ev_file" || fail "evidence must itemise the sole-reference commits"
-grep -q 'sole reference work' "$ev_file" || fail "evidence must name the guarded commit subject"
-
-# The one-shot override releases exactly the guard's verdict — and says so.
-MULTICA_RECYCLE_OVERRIDE=1 MULTICA_CALLER_OWNER=$issue_a dev_env dev1 destroy --yes > "$out" 2>&1 || fail "override must release the guard-blocked destroy"
-[ ! -d "$MULTICA_SLOTS_HOME/dev1" ] || fail "override destroy must complete the teardown"
-ev_file="$(sed -n 's/.*evidence: //p' "$out" | tail -1)"
-[ -f "$ev_file" ] || fail "override destroy must still write evidence"
-grep -q '^override: true' "$ev_file" || fail "override evidence must record override: true"
-grep -q '^verdict: blocked' "$ev_file" || fail "override evidence must keep the scan verdict"
-
-# Kill switch: the legacy unconditional behaviour returns, evidence-free.
-MULTICA_CALLER_OWNER=$issue_a dev_env dev1 use "$sha1" > "$out" 2>&1 || fail "kill-switch: setup must load dev1"
-wtg="$MULTICA_SLOTS_HOME/dev1/worktrees/ruyi-333"
-git -C "$wtg" checkout -q --detach
-echo guarded > "$wtg/guarded2.txt"
-git -C "$wtg" add guarded2.txt
-git -C "$wtg" commit -q -m "another sole reference"
-ev_before="$(ev_count)"
-MULTICA_GC_GUARD_ENABLED=false MULTICA_CALLER_OWNER=$issue_a dev_env dev1 destroy --yes > "$out" 2>&1 || fail "kill switch must restore the legacy unconditional destroy"
-[ ! -d "$MULTICA_SLOTS_HOME/dev1" ] || fail "kill-switch destroy must complete the teardown"
-[ "$(ev_count)" -eq "$ev_before" ] || fail "kill switch must not write evidence"
-
-# Fail-closed: a worktree whose source repository is gone cannot be scanned;
-# that used to read as "empty output" and the slot vanished with it.
-gsrc="$tmp_dir/guard-src"
-git init -q "$gsrc"
-git -C "$gsrc" config user.email test@localhost
-git -C "$gsrc" config user.name test
-echo base > "$gsrc/base.txt"
-git -C "$gsrc" add base.txt
-git -C "$gsrc" commit -q -m base
-mkdir -p "$MULTICA_SLOTS_HOME/dev2/worktrees"
-git -C "$gsrc" worktree add -q --detach "$MULTICA_SLOTS_HOME/dev2/worktrees/orphan" HEAD
-rm -rf "$gsrc"
-register_slot dev2 RUYI-594 "$tmp_dir/guard-src-gone" 24 "$past_iso" qa
-dev_env gc --dry-run > "$out" 2>&1 || fail "gc --dry-run must succeed against an unreadable carrier"
-require_contains "$out" "dev2 would be collected"
-require_contains "$out" "guard: blocked"
-[ -d "$MULTICA_SLOTS_HOME/dev2" ] || fail "dry run must not destroy anything"
-ev_file="$(sed -n 's/.*evidence: //p' "$out" | tail -1)"
-[ -f "$ev_file" ] || fail "gc --dry-run must write its own evidence file"
-grep -q '^dry_run: true' "$ev_file" || fail "dry-run evidence must be marked dry_run: true"
-grep -q 'fail-closed' "$ev_file" || fail "the unreadable carrier must be recorded fail-closed"
-
-status=0
-dev_env gc > "$out" 2>&1 || status=$?
-[ "$status" -ne 0 ] || fail "gc must fail loudly when the guard blocks the collection"
-[ -d "$MULTICA_SLOTS_HOME/dev2" ] || fail "a guard-blocked gc must keep the slot"
-[ -d "$MULTICA_SLOTS_HOME/dev2/worktrees/orphan" ] || fail "a guard-blocked gc must keep the unreadable worktree"
-[ -f "$MULTICA_SLOTS_HOME/dev2/manifest.env" ] || fail "a guard-blocked gc must keep the manifest"
-# gc writes its own lease while collecting; the retry must still see the
-# slot's qa phase (RUYI-594) — a phase drift to dev would make every later
-# cycle silently skip the slot, guard and override included.
-grep -q '^PHASE=qa' "$MULTICA_SLOTS_HOME/dev2/.slot-lock" || fail "the gc-written lease must keep the manifest's qa phase across a blocked destroy"
-status=0
-dev_env gc > "$out" 2>&1 || status=$?
-[ "$status" -ne 0 ] || fail "the next gc cycle must retry and stay guard-blocked"
-[ -d "$MULTICA_SLOTS_HOME/dev2" ] || fail "the blocked retry must keep the slot"
-
-# The override works on the gc path too: preservation done, one-shot release.
-MULTICA_RECYCLE_OVERRIDE=1 dev_env gc > "$out" 2>&1 || fail "override must let gc collect the unreadable carrier"
-[ ! -d "$MULTICA_SLOTS_HOME/dev2" ] || fail "override gc must complete the collection"
-
-# ---------------------------------------------------------------------------
-# Partial failure keeps the slot: a failed drop leaves the manifest + lease so
-# destroy can retry instead of stranding the database.
-# ---------------------------------------------------------------------------
-MULTICA_CALLER_OWNER=$issue_a dev_env dev2 use > "$out" 2>&1 || fail "setup: bind dev2"
-status=0
-FAIL_DROP=1 MULTICA_CALLER_OWNER=$issue_a dev_env dev2 destroy --yes > "$out" 2>&1 || status=$?
-[ "$status" -ne 0 ] || fail "destroy with a failing drop must report failure"
-require_contains "$out" "partially destroyed"
-[ -f "$MULTICA_SLOTS_HOME/dev2/manifest.env" ] || fail "a partial destroy must keep the manifest"
-MULTICA_CALLER_OWNER=$issue_a dev_env dev2 destroy --yes > "$out" 2>&1 || fail "retry after the drop failure must succeed"
-[ ! -d "$MULTICA_SLOTS_HOME/dev2" ] || fail "retry destroy must remove the slot directory"
+for mode in normal override disabled; do
+  case "$mode" in
+    override) export MULTICA_RECYCLE_OVERRIDE=1 ;;
+    disabled) export MULTICA_GC_GUARD_ENABLED=false ;;
+  esac
+  if MULTICA_CALLER_OWNER=$issue_a dev_env dev1 destroy --yes > "$out" 2>&1; then
+    fail "$mode destroy succeeded without verified recovery"
+  fi
+  unset MULTICA_RECYCLE_OVERRIDE MULTICA_GC_GUARD_ENABLED
+  require_contains "$out" "no verified recovery"
+  [ -f "$MULTICA_SLOTS_HOME/dev1/manifest.env" ] || fail "destroy removed the manifest"
+  [ -f "$MULTICA_SLOTS_HOME/dev1/.slot-lock" ] || fail "destroy removed the lease"
+done
+[ "$(wc -l < "$psql_log")" -eq "$lines_before" ] || fail "destroy issued SQL without verified recovery"
+rm -rf "$MULTICA_SLOTS_HOME/dev1" "$MULTICA_SLOTS_HOME/dev2"
 
 # ---------------------------------------------------------------------------
 # orphans: the acceptance verb for the no-survivors invariant. It scans live
@@ -997,42 +827,17 @@ rm -rf "$MULTICA_SLOTS_HOME/dev1/worktrees"
 git -C "$repo" worktree prune
 
 # ---------------------------------------------------------------------------
-# gc collects expired qa-phase slots, slides over live ones, never touches
-# dev-phase slots (no TTL — the slot is handed back at issue closure), and
-# takes an expired qa-phase slot even from a dead lease.
-# ---------------------------------------------------------------------------
-register_slot dev1 RUYI-401 "$repo" 24 "$past_iso" qa
+# GC reports expiry and missing checkouts, but never drops Issue data.
+register_slot dev1 RUYI-405 "$tmp_dir/vanished-checkout" 24 "$past_iso" qa
 register_slot dev2 RUYI-402 "$repo" 24 "$future_iso" qa
-
-dev_env gc --dry-run > "$out" 2>&1 || fail "gc --dry-run must succeed"
-require_contains "$out" "dev1 would be collected"
-require_absent "$out" "dev2"
-[ -d "$MULTICA_SLOTS_HOME/dev1" ] || fail "dry run must not destroy anything"
-
-lines_before="$(wc -l < "$psql_log")"
-dev_env gc > "$out" 2>&1 || fail "gc must succeed"
-require_contains "$out" "dev1"
-sql="$(tail -n +"$((lines_before + 1))" "$psql_log")"
-printf '%s' "$sql" | grep -qF 'DROP DATABASE IF EXISTS "multica_dev1"' || fail "gc must drop the expired qa-phase slot database"
-[ ! -d "$MULTICA_SLOTS_HOME/dev1" ] || fail "gc must free the expired qa-phase slot"
-[ -d "$MULTICA_SLOTS_HOME/dev2" ] || fail "gc must not collect a live qa-phase slot"
-
-# A dev-phase slot is never TTL-collected, even with a long-past stamp.
-register_slot dev1 RUYI-403 "$repo" 0 "$past_iso" dev
-dev_env gc > "$out" 2>&1 || fail "gc must succeed"
-[ -d "$MULTICA_SLOTS_HOME/dev1" ] || fail "gc must never collect a dev-phase slot (no TTL)"
-
-# A qa-phase slot whose code directory vanished is collected too.
-register_slot dev1 RUYI-404 "$tmp_dir/vanished-checkout" 24 "$future_iso" qa
-dev_env gc > "$out" 2>&1 || fail "gc must succeed"
-[ ! -d "$MULTICA_SLOTS_HOME/dev1" ] || fail "gc must collect a qa-phase slot whose code directory is gone"
-
-# An expired qa-phase slot with a stale lease is still collected — the lease
-# of a forgotten slot must not outlive its TTL.
-register_slot dev1 RUYI-405 "$repo" 24 "$past_iso" qa
 printf 'OWNER_ISSUE=RUYI-405\nOWNER_ROLE=agent\nACQUIRED_AT=%s\nPHASE=qa\n' "$past_iso" > "$MULTICA_SLOTS_HOME/dev1/.slot-lock"
-dev_env gc > "$out" 2>&1 || fail "gc must succeed against a stale lease"
-[ ! -d "$MULTICA_SLOTS_HOME/dev1" ] || fail "gc must collect an expired qa-phase slot even under a stale lease"
+lines_before="$(wc -l < "$psql_log")"
+MULTICA_RECYCLE_OVERRIDE=1 dev_env gc > "$out" 2>&1 || fail "gc must succeed"
+require_contains "$out" "dev1 retained"
+require_absent "$out" "dev2"
+[ "$(wc -l < "$psql_log")" -eq "$lines_before" ] || fail "gc issued SQL"
+[ -f "$MULTICA_SLOTS_HOME/dev1/.slot-lock" ] || fail "gc removed the stale lease"
+[ -f "$MULTICA_SLOTS_HOME/dev1/manifest.env" ] || fail "gc deleted an expired slot"
 
 # ---------------------------------------------------------------------------
 # main-db: the shared instance window is opt-in and read-only.
@@ -1070,7 +875,7 @@ register_slot dev1 RUYI-401 "$repo" 24 "$future_iso" dev
 status=0
 bash "$repo/scripts/qa-clean.sh" --issue RUYI-401 > "$out" 2>&1 || status=$?
 [ "$status" -eq 0 ] || fail "qa-clean dry run must succeed"
-require_contains "$out" "would destroy slot dev1"
+require_contains "$out" "would check whether to stop slot dev1"
 require_contains "$out" "RUYI-401"
 [ -d "$MULTICA_SLOTS_HOME/dev1" ] || fail "qa-clean dry run must not destroy"
 
@@ -1085,16 +890,28 @@ PHASE=dev
 ACQUIRED_AT=2026-01-01T00:00:00Z
 EOF
 register_slot dev2 RUYI-402 "$repo" 24 "$future_iso" qa
-bash "$repo/scripts/qa-clean.sh" --issue RUYI-401 --yes > "$out" 2>&1 || fail "qa-clean --yes must succeed"
+printf '%s\n' '{"status":"done","status_category":"in_progress"}' > "$state/issue-RUYI-401.json"
+MULTICA_CALLER_OWNER=RUYI-401 FAKE_DOCKER_PS=$'test-id\truyi-401-qa\truyi-test' bash "$repo/scripts/qa-clean.sh" --issue RUYI-401 --yes --docker > "$out" 2>&1 || fail "qa-clean --yes must succeed"
+require_contains "$out" "reported container ruyi-401-qa"
+if grep -q "^rm -f test-id$" "$docker_log"; then fail "qa-clean must not remove a name-matched container"; fi
+rm "$state/issue-RUYI-401.json"
 [ -d "$MULTICA_SLOTS_HOME/dev1" ] || fail "qa-clean must preserve an active issue's slot identity"
 [ -f "$MULTICA_SLOTS_HOME/dev1/manifest.env" ] || fail "qa-clean must retain the active slot manifest"
 require_contains "$out" "preserved active slot dev1"
 [ -d "$MULTICA_SLOTS_HOME/dev2" ] || fail "qa-clean --issue must not touch another issue's slot"
 
-# Once the Issue is terminal the same scoped cleanup may reclaim the slot.
-printf 'done' > "$state/issue-RUYI-401"
-bash "$repo/scripts/qa-clean.sh" --issue RUYI-401 --yes > "$out" 2>&1 || fail "terminal qa-clean --yes must succeed"
-[ ! -d "$MULTICA_SLOTS_HOME/dev1" ] || fail "terminal qa-clean must destroy the matching slot"
+# Terminal QA cleanup releases the QA lease but preserves Issue data.
+printf '%s\n' '{"status":"custom-complete","status_category":"done"}' > "$state/issue-RUYI-401.json"
+bash "$repo/scripts/qa-clean.sh" --issue RUYI-40 --yes > "$out" 2>&1 || fail "prefix-scoped qa-clean must succeed"
+[ -d "$MULTICA_SLOTS_HOME/dev1" ] || fail "qa-clean must match the exact owner, not an Issue prefix"
+printf 'OWNER_ISSUE=RUYI-401\nOWNER_ROLE=agent\nPHASE=qa\nACQUIRED_AT=2026-01-01T00:00:00Z\n' > "$MULTICA_SLOTS_HOME/dev1/.slot-lock"
+bash "$repo/scripts/qa-clean.sh" --issue RUYI-401 --yes > "$out" 2>&1 || fail "unowned scoped qa-clean must report"
+require_contains "$out" "matching MULTICA_CALLER_OWNER required"
+[ -f "$MULTICA_SLOTS_HOME/dev1/.slot-lock" ] || fail "unowned cleanup removed lease"
+MULTICA_CALLER_OWNER=RUYI-401 bash "$repo/scripts/qa-clean.sh" --issue RUYI-401 --yes > "$out" 2>&1 || fail "terminal qa-clean --yes must succeed"
+[ ! -f "$MULTICA_SLOTS_HOME/dev1/.slot-lock" ] || fail "owned QA cleanup did not release its lease"
+[ -d "$MULTICA_SLOTS_HOME/dev1" ] || fail "terminal qa-clean removed the matching slot"
+require_contains "$out" "preserved terminal slot dev1"
 
 # Unscoped --yes without an owner must not destroy anyone else's slot — a
 # qa-phase slot held by a foreign issue is skipped, not destroyed.
@@ -1148,39 +965,23 @@ MULTICA_CALLER_OWNER=$issue_a dev_env dev1 lock-release > "$out" 2>&1 || fail "q
 MULTICA_CALLER_OWNER=$issue_a dev_env dev2 lock-release > "$out" 2>&1 || fail "qa-window: lock-release of dev2 must succeed"
 [ ! -f "$MULTICA_SLOTS_HOME/dev2/.slot-lock" ] || fail "qa-window: dev2's lease must be gone"
 
-# Releasing hands the slots back to the pool — dropping the lock file alone is
-# not enough: the manifest tenancy must clear too, or every gate and display
-# still reports the slot as held by the old issue while it is actually free
-# (RUYI-431 P1). While issue_a is still in_progress the next claimant must be
-# able to acquire both released slots, one via use and one via lock-recover.
-if grep -q "^ISSUE=$issue_a" "$MULTICA_SLOTS_HOME/dev1/manifest.env"; then
-  fail "qa-window: released dev1's manifest must not keep the old holder"
-fi
-dev_env dev1 lock-status > "$out" 2>&1 || fail "qa-window: lock-status after release must work"
-require_contains "$out" "free"
-dev_env list --json > "$out" 2>&1 || fail "qa-window: list --json after release must work"
-node -e '
-  const a = JSON.parse(require("fs").readFileSync(0, "utf8"));
-  const d1 = a.find(s => s.slot === "dev1");
-  if (!d1 || d1.lease_issue !== "" || d1.phase !== "dev" || d1.expires_at !== "") process.exit(1);
-' < "$out" || fail "qa-window: released dev1 must list free — no lease residue, phase back to dev, TTL cleared"
-
-MULTICA_CALLER_OWNER=$issue_b dev_env dev1 use > "$out" 2>&1 || fail "qa-window: a foreign issue must be able to use the released dev1"
-grep -q "OWNER_ISSUE=$issue_b" "$MULTICA_SLOTS_HOME/dev1/.slot-lock" || fail "qa-window: dev1's new lease must name the foreign issue"
-
-MULTICA_CALLER_OWNER=$issue_b dev_env dev2 lock-recover > "$out" 2>&1 || fail "qa-window: lock-recover on released dev2 must succeed while the old issue is still in_progress"
-grep -q "OWNER_ISSUE=$issue_b" "$MULTICA_SLOTS_HOME/dev2/.slot-lock" || fail "qa-window: dev2's recovered lease must name the foreign issue"
-grep -q "^ISSUE=$issue_b" "$MULTICA_SLOTS_HOME/dev2/manifest.env" || fail "qa-window: recovery must adopt the manifest issue"
-
-# The dev phase keeps the closure-only rule: an in_progress issue cannot
-# release its development slot, owner or not. dev1 now belongs to issue_b.
-printf 'in_progress' > "$state/issue-$issue_b"
-MULTICA_CALLER_OWNER=$issue_b dev_env dev1 use > "$out" 2>&1 || fail "qa-window: rebinding dev1 in dev phase must succeed"
-status=0
-MULTICA_CALLER_OWNER=$issue_b dev_env dev1 lock-release > "$out" 2>&1 || status=$?
-[ "$status" -ne 0 ] || fail "qa-window: dev-phase lock-release while in_progress must stay refused"
-require_contains "$out" "still in_progress"
-MULTICA_CALLER_OWNER=$issue_b dev_env dev1 lock-release --force > "$out" 2>&1 || fail "qa-window: cleanup release must succeed"
+# A released window does not transfer the slot's data to another Issue.
+grep -q "^ISSUE=$issue_a" "$MULTICA_SLOTS_HOME/dev1/manifest.env" || fail "QA release lost resource ownership"
+for slot in dev1 dev2; do
+  if MULTICA_CALLER_OWNER=$issue_b dev_env "$slot" use > "$out" 2>&1; then fail "foreign use of a retained QA slot succeeded"; fi
+  if MULTICA_CALLER_OWNER=$issue_b dev_env "$slot" lock-recover > "$out" 2>&1; then fail "foreign takeover of a retained QA slot succeeded"; fi
+  if MULTICA_RECYCLE_OVERRIDE=1 MULTICA_CALLER_OWNER=$issue_a dev_env "$slot" destroy --yes > "$out" 2>&1; then fail "active Issue slot was destroyed"; fi
+  require_contains "$out" "not confirmed terminal"
+  [ -f "$MULTICA_SLOTS_HOME/$slot/manifest.env" ] || fail "destroy removed the active slot manifest"
+done
+rm "$state/issue-$issue_a"
+if MULTICA_CALLER_OWNER=$issue_a dev_env dev1 destroy --yes > "$out" 2>&1; then fail "unknown Issue slot was destroyed"; fi
+require_contains "$out" "not confirmed terminal"
+printf 'done' > "$state/issue-$issue_a"
+if MULTICA_CALLER_OWNER=$issue_a dev_env dev1 destroy --yes > "$out" 2>&1; then fail "terminal slot destroyed without verified recovery"; fi
+require_contains "$out" "no verified recovery"
+if MULTICA_CALLER_OWNER=$issue_b dev_env dev1 use > "$out" 2>&1; then fail "terminal data was reassigned to a foreign Issue"; fi
+MULTICA_CALLER_OWNER=$issue_a dev_env dev1 use > "$out" 2>&1 || fail "same-Issue recovery failed"
 
 # ---------------------------------------------------------------------------
 # audit (RUYI-431): report-only bypass detection. Unregistered multica_%

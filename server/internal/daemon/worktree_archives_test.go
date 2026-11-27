@@ -15,7 +15,7 @@ import (
 
 func TestWorktreeArchivePreservesOutputsAndRestoresWithoutDiscard(t *testing.T) {
 	d := worktreeTestDaemon(t)
-	root := createTaskDir(t, d.cfg.WorkspacesRoot, "ws1", "task1", &execenv.GCMeta{WorkspaceID: "ws1", TaskID: "task1", LocalDirectory: true, ProjectID: "project", ProjectName: "Project"})
+	root := createTaskDir(t, d.cfg.WorkspacesRoot, "ws1", "task1", &execenv.GCMeta{WorkspaceID: "ws1", TaskID: "task1", LocalDirectory: true, Kind: execenv.GCKindChat, ChatSessionID: "chat", ProjectID: "project", ProjectName: "Project"})
 	repo := createWorktreeTestRepo(t)
 	checkout := filepath.Join(root, "worktree")
 	worktreeTestGit(t, repo, "worktree", "add", "-b", "agent/archive", checkout)
@@ -57,6 +57,25 @@ func TestWorktreeArchivePreservesOutputsAndRestoresWithoutDiscard(t *testing.T) 
 	}
 	if restored := d.restoreEnvironmentOperation(t.Context(), result.ArchiveID, "ws1"); restored.Reason != "existing_environment" {
 		t.Fatalf("existing environment overwritten: %+v", restored)
+	}
+}
+
+func TestWorktreeArchiveRetainsIssueCheckout(t *testing.T) {
+	d := worktreeTestDaemon(t)
+	for _, meta := range []*execenv.GCMeta{nil, {IssueID: "issue-1"}} {
+		root := createTaskDir(t, d.cfg.WorkspacesRoot, "ws1", filepath.Base(t.TempDir()), meta)
+		checkout := filepath.Join(root, "worktree")
+		repo := createWorktreeTestRepo(t)
+		worktreeTestGit(t, repo, "worktree", "add", "--detach", checkout)
+		if result := d.archiveEnvironmentOperation(t.Context(), root, "", ""); result.Reason != "retained" || result.Reclaimed {
+			t.Fatalf("archive preview: %+v", result)
+		}
+		if _, removed, _ := d.cleanTaskDir(root); removed {
+			t.Fatal("GC removed a protected checkout")
+		}
+		if _, err := os.Stat(checkout); err != nil {
+			t.Fatal(err)
+		}
 	}
 }
 

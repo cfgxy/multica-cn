@@ -552,6 +552,7 @@ func Prepare(params PrepareParams, logger *slog.Logger) (*Environment, error) {
 	// written so the sidecars land inside the disposable worktree instead of
 	// the user's directory.
 	var localWorktree *LocalWorktree
+	var codeRoot string
 	// Tracks whether Prepare reached its successful return. Everything after
 	// worktree creation can still fail — context files, provider homes, MCP
 	// config — and on those paths the caller never receives an Environment, so
@@ -561,24 +562,39 @@ func Prepare(params PrepareParams, logger *slog.Logger) (*Environment, error) {
 	prepareSucceeded := false
 	if params.LocalWorktree != nil {
 		wtParams := *params.LocalWorktree
-		wtParams.EnvRoot = envRoot
+		if wtParams.EnvRoot == "" || wtParams.IssueID == "" {
+			wtParams.EnvRoot = envRoot
+		}
 		wtParams.AgentName = params.AgentName
 		wtParams.TaskID = params.TaskID
 		wtParams.ConversationKey, wtParams.ConversationID = localWorktreeConversation(params)
 		wtParams.WorkspaceID = params.WorkspaceID
 		wtParams.AgentID = params.Task.AgentID
 		wtParams.ProjectID, wtParams.SquadID, wtParams.RuntimeID = params.Task.ProjectID, params.Task.SquadID, params.RuntimeID
+		var err error
+		if wtParams.RetainCheckout {
+			wtParams.IssueID = params.Task.IssueID
+		}
 		wtParams.RepositoryScope, err = RepositoryScopeFingerprint(params.Task.Repos, params.Task.ProjectResources)
 		if err != nil {
 			return nil, err
 		}
-		var err error
-		localWorktree, err = PrepareLocalWorktree(wtParams, logger)
+		newCheckout := true
+		if wtParams.IssueID != "" && wtParams.EnvRoot != envRoot && ProtectLocalWorktree(wtParams.EnvRoot) {
+			newCheckout = false
+			var previous *LocalWorktree
+			previous, err = ReadRetainedLocalWorktree(wtParams.EnvRoot)
+			if err == nil {
+				localWorktree, err = ReuseLocalWorktree(previous, wtParams, logger)
+			}
+		} else {
+			localWorktree, err = PrepareLocalWorktree(wtParams, logger)
+		}
 		if err != nil {
 			return nil, err
 		}
 		defer func() {
-			if prepareSucceeded {
+			if prepareSucceeded || !newCheckout {
 				return
 			}
 			// Safe to discard unconditionally: no agent has run yet, so the
@@ -586,15 +602,24 @@ func Prepare(params PrepareParams, logger *slog.Logger) (*Environment, error) {
 			localWorktree.Discard(logger)
 		}()
 		workDir = localWorktree.WorkDir
+		if wtParams.EnvRoot != envRoot {
+			codeRoot = wtParams.EnvRoot
+		}
 		// The resource may point at a subdirectory that holds only ignored
 		// files, in which case git doesn't materialise it in the worktree.
 		if err := os.MkdirAll(workDir, 0o755); err != nil {
 			return nil, fmt.Errorf("execenv: create worktree workdir %s: %w", workDir, err)
 		}
+		if codeRoot != "" && wtParams.IssueID != "" {
+			if err := writeRetainedLocalWorktree(localWorktree); err != nil {
+				return nil, err
+			}
+		}
 	}
 
 	env := &Environment{
 		RootDir:           envRoot,
+		CodeRootDir:       codeRoot,
 		WorkDir:           workDir,
 		LocalDirectory:    params.LocalWorkDir != "",
 		LocalWorktree:     localWorktree,
@@ -1740,11 +1765,29 @@ func ReadEnvRootOwner(envRoot string) (*EnvRootOwner, error) {
 	return &owner, nil
 }
 
+// ProtectLocalWorktree keeps local checkout roots until Issue-level reclamation
+// can coordinate with reopening and run dispatch. Older roots may have no
+// usable GC metadata, so recognize the managed layout before trusting a status.
+func ProtectLocalWorktree(root string) bool {
+	_, err := os.Lstat(filepath.Join(root, localWorktreeDirName, ".git"))
+	if errors.Is(err, os.ErrNotExist) {
+		return false
+	}
+	if err != nil {
+		return true
+	}
+	meta, err := ReadGCMeta(root)
+	return err != nil || meta.IssueID != "" || (meta.ChatSessionID == "" && meta.AutopilotRunID == "")
+}
+
 // resetEnvRootContents empties an env root the caller already owns and holds
 // the lock on, keeping the bookkeeping files. Removing and recreating the
 // directory instead would drop both the claim and the lock for as long as the
 // recreate takes, which is exactly the window claimEnvRoot exists to close.
 func resetEnvRootContents(envRoot string) error {
+	if ProtectLocalWorktree(envRoot) {
+		return fmt.Errorf("refusing to reset %s: local checkout must be retained", envRoot)
+	}
 	entries, err := os.ReadDir(envRoot)
 	if err != nil {
 		return err

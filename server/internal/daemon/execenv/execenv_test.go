@@ -6842,6 +6842,27 @@ func TestPrepareConcurrentSameKeyTasksClaimExclusively(t *testing.T) {
 	}
 }
 
+func TestResetEnvRootRetainsCheckoutWithUnknownOwner(t *testing.T) {
+	root := t.TempDir()
+	checkout := filepath.Join(root, localWorktreeDirName)
+	if err := os.Mkdir(checkout, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{filepath.Join(checkout, ".git"), filepath.Join(root, "keep")} {
+		if err := os.WriteFile(path, []byte("preserve"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := resetEnvRootContents(root); err == nil {
+		t.Fatal("reset accepted an existing checkout without known ownership")
+	}
+	for _, path := range []string{filepath.Join(checkout, ".git"), filepath.Join(root, "keep")} {
+		if _, err := os.Stat(path); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
 // TestClaimEnvRootRefusesUnownedDirectoryWithContent covers the other way the
 // marker can be missing: a directory that holds files but names no task. The
 // marker is written before any content, so this is not a shape Prepare

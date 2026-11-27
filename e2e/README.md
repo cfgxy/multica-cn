@@ -98,5 +98,5 @@ release entry 上复跑后，每个失败症状按且仅按以下三类归因：
 ## 5. 清理
 
 - E2E 合成工作区（`e2e-workspace-*`/`e2e-mcp-*`）：正式 `DELETE /api/workspaces/{id}` 逐个清理并复查库内残留为 0（QA 轮 4 先例：19 个全部 204）。
-- 槽位：qa 相位验证结束 `MULTICA_CALLER_OWNER=<issue-id> scripts/dev-env.sh dev1 lock-release` 即释归池；`down` 停组件。
-- 收尾清点：`MULTICA_CALLER_OWNER=<issue-id> bash scripts/qa-clean.sh --issue <issue-id> --yes`。
+- QA 验证结束后，用 `MULTICA_CALLER_OWNER=<issue-id> bash scripts/qa-clean.sh --issue <issue-id> --yes` 停止该 Issue 的受管 QA 组件并归还租约。
+- 归还租约不会删除数据库、fixture、profile 或工作树，也不会把这些资源转交给其他 Issue。不带 `--yes` 时只报告。

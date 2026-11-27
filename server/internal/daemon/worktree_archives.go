@@ -123,6 +123,10 @@ func (d *Daemon) archiveEnvironmentOperation(ctx context.Context, path, revision
 	defer release()
 	result.WorkspaceID, result.TaskID = owner.WorkspaceID, owner.TaskID
 	result.EnvironmentID = d.managedEnvironmentID(path, owner.WorkspaceID, owner.TaskID)
+	if execenv.ProtectLocalWorktree(path) {
+		result.Reason = "retained"
+		return result
+	}
 	unlockRepositories, err := execenv.LockEnvironmentArchiveRepositories(ctx, path)
 	if err != nil {
 		result.Reason = "repository_busy"

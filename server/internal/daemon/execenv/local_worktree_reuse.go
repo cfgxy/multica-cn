@@ -51,7 +51,16 @@ func ReadRetainedLocalWorktree(root string) (*LocalWorktree, error) {
 
 func LocalWorktreeReuseMatches(previous *LocalWorktree, params LocalWorktreeParams) bool {
 	root, err := resolveGitRoot(params.LocalPath)
-	return err == nil && root == previous.GitRoot && previous.owner == params.owner()
+	return err == nil && root == previous.GitRoot && localWorktreeOwnerMatches(previous, params)
+}
+
+func localWorktreeOwnerMatches(previous *LocalWorktree, params LocalWorktreeParams) bool {
+	if params.IssueID == "" {
+		return previous.owner == params.owner()
+	}
+	// Older retained worktrees did not record IssueID. The registry checks
+	// their Issue metadata before allowing adoption.
+	return (previous.IssueID == "" || previous.IssueID == params.IssueID) && params.owner().matches(previous.owner)
 }
 
 // ReuseLocalWorktree runs while the caller owns the old environment lease.
@@ -61,7 +70,7 @@ func ReuseLocalWorktree(previous *LocalWorktree, params LocalWorktreeParams, log
 	if err != nil {
 		return nil, err
 	}
-	if gitRoot != previous.GitRoot || previous.owner != params.owner() {
+	if gitRoot != previous.GitRoot || !localWorktreeOwnerMatches(previous, params) {
 		return nil, errors.New("local worktree scope changed")
 	}
 	common, err := runGitTrimmed(previous.Path, "rev-parse", "--path-format=absolute", "--git-common-dir")
@@ -85,7 +94,11 @@ func ReuseLocalWorktree(previous *LocalWorktree, params LocalWorktreeParams, log
 		return nil, err
 	}
 	defer unlock()
-	if dirty, err := worktreeIsDirty(previous.Path); err != nil || dirty {
+	dirty, err := worktreeIsDirty(previous.Path)
+	if err != nil {
+		return nil, err
+	}
+	if dirty && params.IssueID == "" {
 		return nil, errors.New("retained local worktree has uncommitted changes")
 	}
 	head, err := runGitTrimmed(gitRoot, "rev-parse", "--verify", "HEAD")
@@ -100,6 +113,13 @@ func ReuseLocalWorktree(previous *LocalWorktree, params LocalWorktreeParams, log
 	if err != nil || branch != previous.Branch {
 		return nil, errors.New("retained worktree branch changed")
 	}
+	if dirty {
+		tip, err := runGitTrimmed(previous.Path, "rev-parse", "--verify", "HEAD")
+		if err != nil || tip != plan.base {
+			return nil, errors.New("dirty Issue checkout HEAD changed; recovery required")
+		}
+		return &LocalWorktree{GitRoot: gitRoot, Path: previous.Path, WorkDir: previous.WorkDir, Branch: previous.Branch, BaseCommit: tip, Continued: true, RetainCheckout: true, IssueID: params.IssueID, userState: plan.priorState, priorState: plan.priorState, owner: plan.owner, tracksState: true}, nil
+	}
 	if err := checkUntrackedReplayable(gitRoot, logger); err != nil {
 		return nil, err
 	}
@@ -111,7 +131,7 @@ func ReuseLocalWorktree(previous *LocalWorktree, params LocalWorktreeParams, log
 	if err != nil {
 		return nil, err
 	}
-	next := &LocalWorktree{GitRoot: gitRoot, Path: previous.Path, WorkDir: previous.WorkDir, Branch: previous.Branch, BaseCommit: plan.base, Continued: true, RetainCheckout: true, ReplayConflicts: replay.conflicts,
+	next := &LocalWorktree{GitRoot: gitRoot, Path: previous.Path, WorkDir: previous.WorkDir, Branch: previous.Branch, BaseCommit: plan.base, Continued: true, RetainCheckout: true, IssueID: params.IssueID, ReplayConflicts: replay.conflicts,
 		userState: state, priorState: plan.priorState, owner: plan.owner, tracksState: true, snapshotPending: len(replay.conflicts) > 0}
 	if len(replay.conflicts) == 0 {
 		if dirty, err := worktreeIsDirty(next.Path); err != nil {

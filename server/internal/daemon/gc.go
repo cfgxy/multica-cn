@@ -86,6 +86,30 @@ type gcStats struct {
 	byPattern                     map[string]int // configured basename or managed path label -> reclaim count
 }
 
+func (d *Daemon) recycleStableIssueCheckouts(ctx context.Context) {
+	if d.client == nil {
+		return
+	}
+	execenv.RecycleIssueCheckouts(ctx, d.cfg.WorkspacesRoot, d.cfg.Profile, d.cfg.ServerBaseURL, func(meta execenv.GCMeta) bool {
+		if !d.cfg.IssueCheckoutReclaimEnabled || !d.cfg.EnvironmentRecycleEnabled || !d.cfg.EnvironmentArchiveEnabled || !d.cfg.GCEnabled || d.cfg.KeepEnvAfterTask || meta.RuntimeID == "" || meta.CompletedAt.IsZero() || d.client.knowledgeToken(meta.WorkspaceID) == "" {
+			return false
+		}
+		policy, err := d.loadEnvironmentPolicy(environmentOperationScope{WorkspaceID: meta.WorkspaceID, RuntimeID: meta.RuntimeID})
+		if err != nil || !policy.Enabled {
+			return false
+		}
+		status, err := d.client.GetIssueGCCheck(ctx, meta.IssueID)
+		if err != nil {
+			return false
+		}
+		completion := meta.CompletedAt
+		if status.UpdatedAt.After(completion) {
+			completion = status.UpdatedAt
+		}
+		return time.Since(completion) >= time.Duration(policy.ArchiveAfterHours)*time.Hour
+	}, d.client.issueReclamation, d.logger)
+}
+
 // runGC performs a single GC scan across all workspace directories.
 func (d *Daemon) runGC(ctx context.Context) {
 	root := d.cfg.WorkspacesRoot
@@ -98,6 +122,7 @@ func (d *Daemon) runGC(ctx context.Context) {
 		return
 	}
 
+	d.recycleStableIssueCheckouts(ctx)
 	stats := &gcStats{byPattern: map[string]int{}}
 	for _, wsEntry := range entries {
 		// Skip every daemon-internal dot directory, not just .repos. A
@@ -371,6 +396,10 @@ func (d *Daemon) applyGCAction(taskDir string, action gcAction, stats *gcStats) 
 			stats.skipped++
 			return 0
 		}
+	}
+	if action != gcActionSkip && execenv.ProtectLocalWorktree(taskDir) {
+		stats.skipped++
+		return 0
 	}
 	switch action {
 	case gcActionClean:
@@ -917,6 +946,9 @@ func (d *Daemon) gcTaskDirOwner(taskDir string) (*execenv.EnvRootOwner, error) {
 // refused removal reports removed=false, and guard reports the recycle
 // guard's verdict ("" when the guard is disabled).
 func (d *Daemon) cleanTaskDir(taskDir string) (bytes int64, removed bool, guard string) {
+	if execenv.ProtectLocalWorktree(taskDir) {
+		return 0, false, ""
+	}
 	// Measure first, prove ownership second. dirSize walks the entire tree,
 	// which on a large task directory takes long enough for the validated
 	// directory to be replaced underneath us — checking before that walk would

@@ -151,6 +151,7 @@ type LocalWorktreeParams struct {
 	RuntimeID       string
 	RepositoryScope string
 	RetainCheckout  bool
+	IssueID         string
 }
 
 // owner is the identity a branch created for this task is recorded under.
@@ -238,6 +239,7 @@ type LocalWorktree struct {
 	ReplayConflicts []string
 	// RetainCheckout preserves the completed worktree for same-identity reuse.
 	RetainCheckout bool
+	IssueID        string
 	// createdBranch records that this prepare put the branch where it is, so
 	// dropping it discards nothing an earlier turn delivered. False for a
 	// continued branch: that one has to survive even a turn that produced
@@ -336,7 +338,7 @@ type LocalWorktreeOutcome struct {
 	// AutoCommitted is true when the agent left uncommitted changes that
 	// Finalize committed so they would survive the worktree's removal.
 	AutoCommitted bool
-	// PreservedPath is set only when Finalize could NOT commit the agent's
+	// PreservedPath is set when Finalize must retain the checkout, including when it could not commit the agent's
 	// changes. The worktree at this path was intentionally left on disk because
 	// it is the only remaining copy of that work.
 	PreservedPath string
@@ -421,6 +423,9 @@ func PrepareLocalWorktree(params LocalWorktreeParams, logger *slog.Logger) (*Loc
 	}
 	defer unlock()
 
+	if ProtectLocalWorktree(params.EnvRoot) {
+		return nil, fmt.Errorf("refusing to replace %s: local checkout must be retained", worktreePath)
+	}
 	if _, statErr := os.Stat(worktreePath); statErr == nil {
 		// Prepare wipes and recreates envRoot, so an existing worktree path
 		// means a stale registration in the user's repo pointing here. Remove
@@ -496,6 +501,7 @@ func PrepareLocalWorktree(params LocalWorktreeParams, logger *slog.Logger) (*Loc
 		BaseCommit:     plan.base,
 		Continued:      plan.continues,
 		RetainCheckout: params.RetainCheckout && plan.owner.valid(),
+		IssueID:        params.IssueID,
 		createdBranch:  createdBranch,
 		userState:      userState,
 		priorState:     plan.priorState,
@@ -738,7 +744,7 @@ func (w *LocalWorktree) Finalize(logger *slog.Logger) (LocalWorktreeOutcome, err
 	tip, err := runGitTrimmed(w.Path, "rev-parse", "--verify", "HEAD")
 	producedWork := err != nil || tip != w.BaseCommit
 	dropped := false
-	if !producedWork && w.createdBranch && !w.RetainCheckout {
+	if !producedWork && w.createdBranch && !w.RetainCheckout && w.IssueID == "" {
 		// A detached checkout can return to the base while the task branch still
 		// carries work. Only discard a branch that itself remains at the base.
 		branchTip, branchErr := runGitTrimmed(w.GitRoot, "rev-parse", "--verify", "refs/heads/"+w.Branch)
@@ -816,6 +822,16 @@ func (w *LocalWorktree) Finalize(logger *slog.Logger) (LocalWorktreeOutcome, err
 		if err := writeRetainedLocalWorktree(w); err != nil {
 			outcome.PreservedPath = w.Path
 			return outcome, err
+		}
+		return outcome, nil
+	}
+
+	if w.IssueID != "" {
+		// Retention is independent of whether this checkout can be reused.
+		// In particular, do not advertise a dirty, budget-excluded tree as reusable.
+		outcome.PreservedPath = w.Path
+		for i := range outcome.Excluded {
+			outcome.Excluded[i].AsidePath = filepath.Join(w.Path, outcome.Excluded[i].Name)
 		}
 		return outcome, nil
 	}
@@ -1838,10 +1854,11 @@ func (o branchOwner) matches(recorded branchOwner) bool {
 		return o == recorded
 	}
 	// A conversation's delivery branch survives a handoff to another agent.
-	// Physical checkout reuse has stricter scope matching in
-	// LocalWorktreeReuseMatches; this check governs only branch lineage.
+	// The handoff changes the agent, not the execution scope.
 	return o.WorkspaceID == recorded.WorkspaceID &&
-		o.ConversationID == recorded.ConversationID
+		o.ConversationID == recorded.ConversationID &&
+		o.ProjectID == recorded.ProjectID && o.SquadID == recorded.SquadID &&
+		o.RuntimeID == recorded.RuntimeID && o.RepositoryScope == recorded.RepositoryScope
 }
 
 const (
@@ -2182,8 +2199,8 @@ func planForExistingBranch(gitRoot, name, headSHA string, owner branchOwner, con
 // branchOwnedBy reports whether a branch is still the one this conversation
 // recorded, returning the user snapshot it carries.
 //
-// Two questions, and both have to hold. Is the record ours — workspace and
-// conversation ids for a conversation branch, or the full task identity for a
+// Two questions, and both have to hold. Is the record ours — conversation and
+// execution scope for a conversation branch, or the full task identity for a
 // task-scoped retry. And is the branch still the one it was written against
 // — the recorded checkpoint has to be an ancestor of the current tip. The
 // second is not pedantry: a branch the user deleted and recreated under the
