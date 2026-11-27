@@ -12,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/events"
 	"github.com/multica-ai/multica/server/pkg/protocol"
+	"github.com/multica-ai/multica/server/pkg/redact"
 )
 
 // The progress card is the process view of a run: one updatable card that
@@ -113,10 +114,11 @@ type ProgressEntry struct {
 
 // ProgressInput is the snapshot a ProgressRenderer turns into card JSON.
 type ProgressInput struct {
-	AgentName string
-	State     ProgressState
-	Entries   []ProgressEntry
-	Truncated bool
+	AgentName      string
+	State          ProgressState
+	Entries        []ProgressEntry
+	Truncated      bool
+	TriggerSummary string
 }
 
 // ProgressRenderer builds the progress card body. Separate from Renderer
@@ -131,21 +133,84 @@ type defaultProgressRenderer struct{}
 // NewDefaultProgressRenderer returns the production progress-card renderer.
 func NewDefaultProgressRenderer() ProgressRenderer { return &defaultProgressRenderer{} }
 
-// progressTerminalSummary intentionally contains no process-entry content. Tool
-// inputs/results can be long or sensitive even after the streaming renderer's
-// redaction, and the terminal card is only a compact state marker; the full
-// user-facing reply remains the separate message sent by sendChatReply.
-func progressTerminalSummary(state ProgressState) string {
+// progressTerminalResult is deliberately limited to the task state and reply
+// guidance. The user can read the complete outcome in the next message; tool
+// inputs and outputs never survive the terminal replacement.
+func progressTerminalResult(state ProgressState) string {
 	switch state {
 	case ProgressStateCompleted:
-		return "任务已完成，完整答复见下一条消息。"
+		return "结果：任务已完成，完整答复见下一条消息。"
 	case ProgressStateFailed:
-		return "任务失败，完整错误说明见下一条消息。"
+		return "结果：任务失败，完整错误说明见下一条消息。"
 	case ProgressStateCancelled:
-		return "任务已取消。"
+		return "结果：任务已取消；如需继续，请重新发起。"
 	default:
 		return ""
 	}
+}
+
+func progressTerminalHeader(name string, state ProgressState) (string, string) {
+	if name == "" {
+		name = "Multica"
+	}
+	switch state {
+	case ProgressStateCompleted:
+		return name + " · 已完成", "green"
+	case ProgressStateFailed:
+		return name + " · 失败", "red"
+	case ProgressStateCancelled:
+		return name + " · 已取消", "grey"
+	default:
+		return name + " · 进行中", "blue"
+	}
+}
+
+func clampTerminalText(s string, limit int) string {
+	r := []rune(strings.TrimSpace(s))
+	if len(r) <= limit {
+		return string(r)
+	}
+	return string(r[:limit]) + "…"
+}
+
+func progressDemand(summary string) string {
+	fields := strings.Fields(summary)
+	visible := fields[:0]
+	for _, field := range fields {
+		// Trigger summaries can start with the channel's @Agent invocation.
+		// Omit any such token rather than restating a routing detail to users.
+		if strings.HasPrefix(field, "@") {
+			continue
+		}
+		visible = append(visible, field)
+	}
+	rawDemand := strings.Join(visible, " ")
+	if demand := clampTerminalText(collapseWhitespace(redact.Text(rawDemand)), 72); demand != "" {
+		return "需求：" + demand
+	}
+	return "需求：处理你的请求。"
+}
+
+func progressActions(entries []ProgressEntry) string {
+	tools := make([]string, 0, 3)
+	seen := make(map[string]struct{})
+	for _, entry := range entries {
+		if entry.Kind != ProgressEntryToolUse || entry.Tool == "" {
+			continue
+		}
+		if _, ok := seen[entry.Tool]; ok {
+			continue
+		}
+		seen[entry.Tool] = struct{}{}
+		tools = append(tools, entry.Tool)
+		if len(tools) == 3 {
+			break
+		}
+	}
+	if len(tools) == 0 {
+		return "执行：完成分析与答复整理。"
+	}
+	return "执行：调用 " + strings.Join(tools, "、") + " 完成处理。"
 }
 
 // progressResultDot renders the three-valued tool outcome without changing the
@@ -201,17 +266,26 @@ func renderProgressEntryElement(e ProgressEntry) map[string]any {
 }
 
 func (defaultProgressRenderer) RenderProgress(in ProgressInput) (CardRender, error) {
-	// A terminal PATCH replaces the expanded process view with exactly one
-	// compact sentence. Do not retain the header, dividers, or entry list: all
-	// of them consume visual space after the task has stopped.
+	name, template := progressTerminalHeader(in.AgentName, in.State)
 	if in.State != ProgressStateRunning {
+		// Terminal patches retain the status header but reduce the body to safe,
+		// structured task context. Tool inputs and results are intentionally not
+		// shown after completion because they may be long or sensitive.
 		doc := map[string]any{
 			"schema": "2.0",
 			"config": map[string]any{
 				"wide_screen_mode": true,
 				"update_multi":     true,
 			},
-			"body": map[string]any{"elements": []any{progressPlainTextElement(progressTerminalSummary(in.State))}},
+			"header": map[string]any{
+				"title":    map[string]any{"tag": "plain_text", "content": name},
+				"template": template,
+			},
+			"body": map[string]any{"elements": []any{
+				progressPlainTextElement(progressDemand(in.TriggerSummary)),
+				progressPlainTextElement(progressActions(in.Entries)),
+				progressPlainTextElement(progressTerminalResult(in.State)),
+			}},
 		}
 		raw, err := json.Marshal(doc)
 		if err != nil {
@@ -220,7 +294,7 @@ func (defaultProgressRenderer) RenderProgress(in ProgressInput) (CardRender, err
 		return CardRender{JSON: string(raw)}, nil
 	}
 
-	name := in.AgentName
+	name = in.AgentName
 	if name == "" {
 		name = "Multica"
 	}
@@ -299,9 +373,10 @@ type progressCard struct {
 	chatKey  string
 	schedule *progressSchedule
 
-	agentName string
-	entries   []ProgressEntry
-	truncated bool
+	agentName      string
+	entries        []ProgressEntry
+	truncated      bool
+	triggerSummary string
 
 	cardMessageID string
 	rowID         pgtype.UUID
@@ -328,10 +403,11 @@ func (c *progressCard) appendEntry(e ProgressEntry) {
 
 func (c *progressCard) snapshot(state ProgressState) ProgressInput {
 	return ProgressInput{
-		AgentName: c.agentName,
-		State:     state,
-		Entries:   append([]ProgressEntry(nil), c.entries...),
-		Truncated: c.truncated,
+		AgentName:      c.agentName,
+		State:          state,
+		Entries:        append([]ProgressEntry(nil), c.entries...),
+		Truncated:      c.truncated,
+		TriggerSummary: c.triggerSummary,
 	}
 }
 
@@ -508,6 +584,9 @@ func (pc *progressCards) push(ctx context.Context, e events.Event, entry Progres
 		return nil
 	}
 	card.agentName = target.agentName
+	if card.triggerSummary == "" {
+		card.triggerSummary = target.triggerSummary
+	}
 	card.appendEntry(entry)
 	card.mu.Unlock()
 

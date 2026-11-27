@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/events"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/protocol"
@@ -134,22 +135,25 @@ func TestProgressCardRenderCarriesUpdateMulti(t *testing.T) {
 	}
 }
 
-// TestProgressCardTerminalStatesAreOneLine verifies each terminal PATCH
-// replaces the process detail with a one-line, state-accurate summary. The
-// detailed answer/error remains a separate outbound message.
-func TestProgressCardTerminalStatesAreOneLine(t *testing.T) {
+// TestProgressCardTerminalStatesRetainStatusHeaderAndStructuredSummary verifies
+// each terminal PATCH replaces trace detail with safe demand/action/result rows
+// while preserving a status-specific header for the settled card.
+func TestProgressCardTerminalStatesRetainStatusHeaderAndStructuredSummary(t *testing.T) {
 	cases := []struct {
-		state   ProgressState
-		summary string
+		state    ProgressState
+		title    string
+		template string
+		result   string
 	}{
-		{ProgressStateCompleted, "任务已完成，完整答复见下一条消息。"},
-		{ProgressStateFailed, "任务失败，完整错误说明见下一条消息。"},
-		{ProgressStateCancelled, "任务已取消。"},
+		{ProgressStateCompleted, "TestAgent · 已完成", "green", "结果：任务已完成，完整答复见下一条消息。"},
+		{ProgressStateFailed, "TestAgent · 失败", "red", "结果：任务失败，完整错误说明见下一条消息。"},
+		{ProgressStateCancelled, "TestAgent · 已取消", "grey", "结果：任务已取消；如需继续，请重新发起。"},
 	}
 	for _, tc := range cases {
 		render, err := NewDefaultProgressRenderer().RenderProgress(ProgressInput{
-			AgentName: "TestAgent",
-			State:     tc.state,
+			AgentName:      "TestAgent",
+			State:          tc.state,
+			TriggerSummary: "@TestAgent 请检查发布日志并修复问题",
 			Entries: []ProgressEntry{
 				{Kind: ProgressEntryToolUse, Tool: "Bash", Text: "sensitive command"},
 				{Kind: ProgressEntryToolResult, Tool: "Bash", Text: "sensitive result"},
@@ -159,11 +163,17 @@ func TestProgressCardTerminalStatesAreOneLine(t *testing.T) {
 			t.Fatalf("render %s card: %v", tc.state, err)
 		}
 		doc := decodeCard(t, render.JSON)
-		if _, hasHeader := doc["header"]; hasHeader {
-			t.Errorf("state %s: terminal card must not retain a header: %s", tc.state, render.JSON)
+		header, _ := doc["header"].(map[string]any)
+		if got := header["template"]; got != tc.template {
+			t.Errorf("state %s: header template=%v, want %s", tc.state, got, tc.template)
 		}
-		if rows := progressPlainTextRows(t, render.JSON); len(rows) != 1 || rows[0] != tc.summary {
-			t.Errorf("state %s: rows = %q, want one summary %q", tc.state, rows, tc.summary)
+		title, _ := header["title"].(map[string]any)
+		if got := title["content"]; got != tc.title {
+			t.Errorf("state %s: header title=%v, want %s", tc.state, got, tc.title)
+		}
+		rows := progressPlainTextRows(t, render.JSON)
+		if len(rows) != 3 || rows[0] != "需求：请检查发布日志并修复问题" || rows[1] != "执行：调用 Bash 完成处理。" || rows[2] != tc.result {
+			t.Errorf("state %s: terminal rows = %q", tc.state, rows)
 		}
 		if strings.Contains(render.JSON, "sensitive command") || strings.Contains(render.JSON, "sensitive result") {
 			t.Errorf("state %s: terminal summary must not retain process detail: %s", tc.state, render.JSON)
@@ -219,6 +229,8 @@ func TestProgressCardRunningEntriesAreCompactGreyPlainText(t *testing.T) {
 // separate plain-text answer untouched.
 func TestProgressCardSendsFirstFrameThenPatches(t *testing.T) {
 	p, q, api, clock := newProgressTestPatcher(t)
+	q.task.TriggerSummary = pgtype.Text{String: "@TestAgent 请更新登录流程", Valid: true}
+	q.binding.LastMessageID = pgtype.Text{String: "om_trigger", Valid: true}
 	taskID := "ee111111-ee11-ee11-ee11-eeeeeeeeeeee"
 	sessionID := uuidString(q.binding.ChatSessionID)
 
@@ -275,12 +287,18 @@ func TestProgressCardSendsFirstFrameThenPatches(t *testing.T) {
 	if len(api.textSent) != 1 || api.textSent[0].Text != "here is the answer" {
 		t.Fatalf("the final answer must still be its own plain-text message; textSent=%+v", api.textSent)
 	}
+	if api.sent[0].ReplyTarget.MessageID != "om_trigger" || api.sent[0].ReplyTarget.InThread {
+		t.Errorf("process card must reply to the normal-group trigger; got %+v", api.sent[0].ReplyTarget)
+	}
+	if api.textSent[0].ReplyTarget.MessageID != "om_trigger" || api.textSent[0].ReplyTarget.InThread {
+		t.Errorf("final text must reply to the normal-group trigger; got %+v", api.textSent[0].ReplyTarget)
+	}
 	if len(api.patched) != 2 {
 		t.Fatalf("chat-done must write the terminal card frame; patched=%d", len(api.patched))
 	}
 	last := api.patched[len(api.patched)-1].CardJSON
-	if !strings.Contains(last, "任务已完成") || strings.Contains(last, "planning the change") || strings.Contains(last, "Read") {
-		t.Errorf("terminal frame must replace process detail with the completion summary; got %s", last)
+	if !strings.Contains(last, "需求：请更新登录流程") || !strings.Contains(last, "任务已完成") || strings.Contains(last, "planning the change") || !strings.Contains(last, "执行：调用 Read") {
+		t.Errorf("terminal frame must retain only the structured completion summary; got %s", last)
 	}
 }
 
@@ -875,6 +893,61 @@ func TestProgressCardCredentialsNeverRenderedRaw(t *testing.T) {
 	}
 	if !strings.Contains(card, "Bash") {
 		t.Errorf("the tool name is the part that is safe to show; got %s", card)
+	}
+}
+
+// TestProgressDemandRedactsTriggerSummary covers the user-controlled summary
+// path, which does not pass through tool payload sanitization. A terminal card
+// must never echo a credential typed in the triggering Lark message.
+func TestProgressDemandRedactsTriggerSummary(t *testing.T) {
+	secret := "ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmn"
+	render, err := NewDefaultProgressRenderer().RenderProgress(ProgressInput{
+		AgentName:      "TestAgent",
+		State:          ProgressStateCompleted,
+		TriggerSummary: "@TestAgent 请检查令牌 " + secret,
+	})
+	if err != nil {
+		t.Fatalf("render terminal card: %v", err)
+	}
+	if strings.Contains(render.JSON, secret) {
+		t.Fatalf("trigger summary credential must not render raw: %s", render.JSON)
+	}
+	if !strings.Contains(render.JSON, "需求：") || !strings.Contains(render.JSON, "[REDACTED") {
+		t.Errorf("terminal demand must retain a redacted summary: %s", render.JSON)
+	}
+}
+
+// TestProgressCardRedactsFallbackInputDemand verifies the older/imported-task
+// path too: when TriggerSummary is empty, the first immutable input is loaded
+// and then redacted before the terminal PATCH renders it.
+func TestProgressCardRedactsFallbackInputDemand(t *testing.T) {
+	p, q, api, _ := newProgressTestPatcher(t)
+	taskID := uuidFromString(t, "ee787878-ee78-ee78-ee78-eeeeeeeeeeee")
+	secret := "sk-proj-abc123def456ghi789jkl012mno345"
+	q.task.ChatInputTaskID = taskID
+	q.taskChannelIngested = true
+	q.inputMessages = []db.ChatMessage{{Content: "@TestAgent 使用密钥 " + secret + " 检查配置"}}
+
+	p.handleTaskMessage(progressFrame(uuidString(taskID), uuidString(q.binding.ChatSessionID), 1, protocol.TaskMessagePayload{
+		Type: "text", Content: "checking configuration",
+	}))
+	p.handleEvent(events.Event{
+		Type: protocol.EventChatDone, TaskID: uuidString(taskID), ChatSessionID: uuidString(q.binding.ChatSessionID),
+		Payload: protocol.ChatDonePayload{TaskID: uuidString(taskID), Content: "done"},
+	})
+	p.progress.waitIdle()
+
+	api.mu.Lock()
+	defer api.mu.Unlock()
+	if len(api.patched) != 1 {
+		t.Fatalf("expected one terminal patch, got %d", len(api.patched))
+	}
+	card := api.patched[0].CardJSON
+	if strings.Contains(card, secret) {
+		t.Fatalf("fallback input credential must not render raw: %s", card)
+	}
+	if !strings.Contains(card, "需求：") || !strings.Contains(card, "[REDACTED") {
+		t.Errorf("fallback demand must retain a redacted summary: %s", card)
 	}
 }
 

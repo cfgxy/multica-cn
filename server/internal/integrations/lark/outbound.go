@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 	"time"
 
@@ -144,6 +145,7 @@ func (defaultRenderer) Render(in RenderInput) (CardRender, error) {
 // without a real Postgres connection.
 type PatcherQueries interface {
 	GetAgentTask(ctx context.Context, id pgtype.UUID) (db.AgentTaskQueue, error)
+	ListChatInputMessages(ctx context.Context, taskID pgtype.UUID) ([]db.ChatMessage, error)
 	TaskHasChannelIngestedMessages(ctx context.Context, taskID pgtype.UUID) (bool, error)
 	GetChannelTaskDelivery(ctx context.Context, taskID pgtype.UUID) (db.ChannelTaskDelivery, error)
 	GetChatSession(ctx context.Context, id pgtype.UUID) (db.ChatSession, error)
@@ -464,7 +466,8 @@ type outboundTarget struct {
 	// without session identity — handler.publishTask stamps only a TaskID hint
 	// and TaskMessagePayload has no chat_session_id field — so the delivery
 	// path is where the card writes get theirs.
-	chatSessionID pgtype.UUID
+	chatSessionID  pgtype.UUID
+	triggerSummary string
 }
 
 // resolveOutboundTarget answers "does this task's output belong on Feishu, and
@@ -530,9 +533,18 @@ func (p *Patcher) resolveOutboundTarget(ctx context.Context, taskID pgtype.UUID)
 	if agent, agentErr := p.queries.GetAgent(ctx, inst.AgentID); agentErr == nil {
 		agentName = agent.Name
 	}
+	triggerSummary := task.TriggerSummary.String
+	if strings.TrimSpace(triggerSummary) == "" && task.ChatInputTaskID.Valid {
+		// TriggerSummary is normally populated at enqueue time. Older or
+		// imported tasks may lack it, so recover the first immutable user input
+		// as a best-effort compact demand without making delivery depend on it.
+		if input, inputErr := p.queries.ListChatInputMessages(ctx, task.ChatInputTaskID); inputErr == nil && len(input) > 0 {
+			triggerSummary = input[0].Content
+		}
+	}
 	return &outboundTarget{
 		taskID: taskID, binding: binding, creds: creds, agentName: agentName, routeRevision: delivery.RouteRevision,
-		chatSessionID: task.ChatSessionID,
+		chatSessionID: task.ChatSessionID, triggerSummary: triggerSummary,
 	}, nil
 }
 
@@ -633,17 +645,18 @@ func outboundChatID(b ChatSessionBinding) ChatID {
 	return ChatID(b.ChannelChatID)
 }
 
-// threadReplyTarget derives the outbound reply target from the chat
-// binding's most-recent inbound trigger. We thread the reply ONLY when
-// that trigger was itself inside a Lark topic (last_lark_thread_id
-// present): normal group / p2p chats keep the unchanged chat-level send
-// path, and only an @-mention that happened inside a thread gets a
-// threaded reply (replying to last_lark_message_id with reply_in_thread).
-// The zero ReplyTarget means "send at the chat level".
+// threadReplyTarget derives the outbound reply target from the chat binding's
+// most-recent inbound trigger. Every valid trigger message is used as the
+// reply parent, so normal group chats keep their conversational context while
+// topic messages additionally set reply_in_thread. The classified fallback
+// remains responsible for retrying at chat level only when Lark rejects the
+// reply target.
 func threadReplyTarget(binding ChatSessionBinding) ReplyTarget {
-	if binding.LastThreadID.Valid && binding.LastThreadID.String != "" &&
-		binding.LastMessageID.Valid && binding.LastMessageID.String != "" {
-		return ReplyTarget{MessageID: binding.LastMessageID.String, InThread: true}
+	if binding.LastMessageID.Valid && binding.LastMessageID.String != "" {
+		return ReplyTarget{
+			MessageID: binding.LastMessageID.String,
+			InThread:  binding.LastThreadID.Valid && binding.LastThreadID.String != "",
+		}
 	}
 	return ReplyTarget{}
 }
