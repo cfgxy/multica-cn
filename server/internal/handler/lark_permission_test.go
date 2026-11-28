@@ -264,6 +264,16 @@ func TestBeginLarkPermissionGrant_UsesExistingAppAndRequiresWorkspaceAdmin(t *te
 	if got := u.Query().Get("clientID"); got != "cli_recheck_test" {
 		t.Fatalf("grant QR clientID = %q, want existing app id", got)
 	}
+	if u.Host != "accounts.feishu.cn" || u.Path != "/oauth/v1/qrcode" {
+		t.Fatalf("grant QR URL = %q, want accounts.feishu.cn/oauth/v1/qrcode", resp.QRCodeURL)
+	}
+
+	prevReg := testHandler.LarkRegistration
+	testHandler.LarkRegistration = nil
+	if code := begin(testUserID, instID).Code; code != http.StatusServiceUnavailable {
+		t.Fatalf("grant without registration service: want 503, got %d", code)
+	}
+	testHandler.LarkRegistration = prevReg
 
 	if code := begin(testUserID, "018f0000-0000-7000-8000-000000000099").Code; code != http.StatusNotFound {
 		t.Fatalf("grant missing installation: want 404, got %d", code)
