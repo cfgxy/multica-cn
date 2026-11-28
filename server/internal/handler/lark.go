@@ -254,7 +254,7 @@ type BeginLarkPermissionGrantResponse struct {
 // unlike an initial agent-level binding, it expands a workspace integration's
 // permissions. It never creates a new app or accesses its secret.
 func (h *Handler) BeginLarkPermissionGrant(w http.ResponseWriter, r *http.Request) {
-	if h.LarkInstallations == nil {
+	if h.LarkInstallations == nil || h.LarkRegistration == nil {
 		writeError(w, http.StatusServiceUnavailable, "lark integration not configured")
 		return
 	}
@@ -282,7 +282,7 @@ func (h *Handler) BeginLarkPermissionGrant(w http.ResponseWriter, r *http.Reques
 		writeError(w, http.StatusConflict, "only an active installation can be granted permissions")
 		return
 	}
-	qrCodeURL, err := lark.PermissionGrantQRCodeURL(lark.Region(inst.Region), inst.AppID)
+	qrCodeURL, err := h.LarkRegistration.BeginPermissionGrant(r.Context(), lark.Region(inst.Region), inst.AppID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to create permission grant URL")
 		return

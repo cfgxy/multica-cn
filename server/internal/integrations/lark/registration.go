@@ -452,6 +452,52 @@ func (c *RegistrationClient) doForm(ctx context.Context, domain string, form url
 	}
 }
 
+// BeginPermissionGrant requests a device authorization from Lark and returns
+// the decorated verification QR code URL for granting permissions to an existing app.
+func (c *RegistrationClient) BeginPermissionGrant(ctx context.Context, region Region, appID string) (string, error) {
+	appID = strings.TrimSpace(appID)
+	if appID == "" {
+		return "", errors.New("app_id is required")
+	}
+	domain := c.cfg.Domain
+	if region == RegionLark {
+		domain = c.cfg.LarkDomain
+	}
+	var resp struct {
+		DeviceCode              string `json:"device_code"`
+		VerificationURIComplete string `json:"verification_uri_complete"`
+		VerificationURI         string `json:"verification_uri"`
+		UserCode                string `json:"user_code"`
+		Interval                int    `json:"interval"`
+		ExpireIn                int    `json:"expire_in"`
+		Error                   string `json:"error"`
+		ErrorDescription        string `json:"error_description"`
+	}
+	form := url.Values{
+		"action":            []string{"begin"},
+		"archetype":         []string{"PersonalAgent"},
+		"auth_method":       []string{"client_secret"},
+		"request_user_info": []string{"open_id"},
+	}
+	if err := c.doForm(ctx, domain, form, &resp); err != nil {
+		return "", err
+	}
+	if resp.Error != "" {
+		return "", &RegistrationError{Code: resp.Error, Description: resp.ErrorDescription}
+	}
+	if resp.DeviceCode == "" {
+		return "", &RegistrationError{Code: "invalid_response", Description: "device_code is empty"}
+	}
+	if resp.VerificationURIComplete == "" {
+		return "", &RegistrationError{Code: "invalid_response", Description: "verification_uri_complete is empty"}
+	}
+	qr, err := PermissionGrantQRCodeURL(resp.VerificationURIComplete, c.cfg.Source, appID)
+	if err != nil {
+		return "", &RegistrationError{Code: "invalid_response", Description: "verification_uri_complete is not a URL: " + err.Error()}
+	}
+	return qr, nil
+}
+
 // decorateQRCodeURL appends the SDK-style telemetry params Lark expects
 // on the QR-image URL. Without `from=sdk&tp=sdk&source=<src>` the
 // scanner UI on the user's phone shows a less polished prompt and Lark
@@ -483,27 +529,30 @@ func decorateQRCodeURL(raw, source, namePreset string) (string, error) {
 	return u.String(), nil
 }
 
-// PermissionGrantQRCodeURL returns Lark's confirmation URL for adding the
-// complete current permission catalog to an existing app. It only uses the
-// persisted app id and never opens a device-flow session or reads credentials.
-func PermissionGrantQRCodeURL(region Region, appID string) (string, error) {
+// PermissionGrantQRCodeURL decorates Lark's device-flow verification URL
+// with clientID and Multica's complete permission addons for an existing app.
+func PermissionGrantQRCodeURL(raw, source, appID string) (string, error) {
 	appID = strings.TrimSpace(appID)
 	if appID == "" {
 		return "", errors.New("app_id is required")
 	}
+	u, err := url.Parse(raw)
+	if err != nil {
+		return "", err
+	}
+	q := u.Query()
+	q.Set("from", "sdk")
+	q.Set("tp", "sdk")
+	if source == "" {
+		q.Set("source", "go-sdk/multica")
+	} else {
+		q.Set("source", "go-sdk/"+source)
+	}
+	q.Set("clientID", appID)
 	addons, err := json.Marshal(PermissionAddonsForRegistration())
 	if err != nil {
 		return "", fmt.Errorf("marshal permission addons: %w", err)
 	}
-	u, err := url.Parse(RegionOrDefault(string(region)).OpenPlatformBaseURL() + "/app")
-	if err != nil {
-		return "", fmt.Errorf("build grant URL: %w", err)
-	}
-	q := u.Query()
-	q.Set("clientID", appID)
-	q.Set("from", "sdk")
-	q.Set("tp", "sdk")
-	q.Set("source", "go-sdk/multica")
 	q.Set("addons", string(addons))
 	u.RawQuery = q.Encode()
 	return u.String(), nil
