@@ -197,6 +197,12 @@ export const issueKeys = {
   tasks: (issueId: string) => [...issueKeys.tasksAll(), issueId] as const,
   sourceContextPreview: (wsId: string, anchorCommentId: string) =>
     ["source-context", "preview", wsId, anchorCommentId] as const,
+  ledgerAll: () => ["issues", "ledger"] as const,
+  ledger: (issueId: string) => [...issueKeys.ledgerAll(), issueId] as const,
+  acsAll: () => ["issues", "acs"] as const,
+  acs: (issueId: string) => [...issueKeys.acsAll(), issueId] as const,
+  todosAll: () => ["issues", "todos"] as const,
+  todos: (issueId: string) => [...issueKeys.todosAll(), issueId] as const,
 };
 
 export function sourceContextPreviewOptions(
@@ -671,5 +677,29 @@ export function issueAttachmentsOptions(issueId: string) {
   return queryOptions({
     queryKey: issueKeys.attachments(issueId),
     queryFn: () => api.listAttachments(issueId),
+  });
+}
+
+export function issueLedgerOptions(issueId: string) {
+  return queryOptions({
+    queryKey: issueKeys.ledger(issueId),
+    queryFn: () => api.getIssueLedger(issueId),
+    enabled: !!issueId,
+  });
+}
+
+export function issueACsOptions(issueId: string) {
+  return queryOptions({
+    queryKey: issueKeys.acs(issueId),
+    queryFn: () => api.listIssueACs(issueId),
+    enabled: !!issueId,
+  });
+}
+
+export function issueTodosOptions(issueId: string) {
+  return queryOptions({
+    queryKey: issueKeys.todos(issueId),
+    queryFn: () => api.listIssueTodos(issueId),
+    enabled: !!issueId,
   });
 }

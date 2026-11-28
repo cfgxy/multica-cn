@@ -923,6 +923,18 @@ func runIssueGet(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("get issue: %w", err)
 	}
 
+	// RUYI-971: enrich with structured AC & dynamic TODO ledger
+	var ledger map[string]any
+	if err := client.GetJSON(ctx, "/api/issues/"+issueRef.ID+"/ledger", &ledger); err == nil {
+		issue["ledger"] = ledger
+		if acs, ok := ledger["acs"]; ok {
+			issue["acceptance_criteria"] = acs
+		}
+		if todos, ok := ledger["todos"]; ok {
+			issue["todos"] = todos
+		}
+	}
+
 	output, _ := cmd.Flags().GetString("output")
 	if output == "table" {
 		actors := loadActorDisplayLookup(ctx, client)

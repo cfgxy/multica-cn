@@ -173,6 +173,16 @@ import type {
   WorkspaceBackpressureSettings,
   WorkspaceBackpressureSettingsSave,
   WorkspacePromQLRuleSave,
+  IssueAcceptanceCriteria,
+  IssueTodo,
+  IssueLedger,
+  CreateIssueACRequest,
+  UpdateIssueACRequest,
+  VerifyIssueACRequest,
+  RejectIssueACRequest,
+  CreateIssueTodoRequest,
+  UpdateIssueTodoRequest,
+  ReopenIssueTodoRequest,
   WorkspacePromQLRules,
   WorkspacePromQLRulePreview,
   PromptQuizItem,
@@ -8280,5 +8290,93 @@ export class ApiClient {
       samples: [],
       matches: false,
     }, { endpoint: "POST /api/workspace/promql-rules/preview" });
+  }
+
+  async getIssueLedger(issueId: string): Promise<IssueLedger> {
+    return this.fetch(`/api/issues/${encodeURIComponent(issueId)}/ledger`);
+  }
+
+  async listIssueACs(issueId: string): Promise<IssueAcceptanceCriteria[]> {
+    return this.fetch(`/api/issues/${encodeURIComponent(issueId)}/ac`);
+  }
+
+  async createIssueAC(issueId: string, data: CreateIssueACRequest): Promise<IssueAcceptanceCriteria> {
+    return this.fetch(`/api/issues/${encodeURIComponent(issueId)}/ac`, {
+      method: "POST",
+      body: JSON.stringify(data),
+    });
+  }
+
+  async extractIssueACs(issueId: string, data?: { description?: string }): Promise<IssueAcceptanceCriteria[]> {
+    return this.fetch(`/api/issues/${encodeURIComponent(issueId)}/ac/extract`, {
+      method: "POST",
+      body: JSON.stringify(data ?? {}),
+    });
+  }
+
+  async getIssueAC(issueId: string, acId: string): Promise<IssueAcceptanceCriteria> {
+    return this.fetch(`/api/issues/${encodeURIComponent(issueId)}/ac/${encodeURIComponent(acId)}`);
+  }
+
+  async updateIssueAC(issueId: string, acId: string, data: UpdateIssueACRequest): Promise<IssueAcceptanceCriteria> {
+    return this.fetch(`/api/issues/${encodeURIComponent(issueId)}/ac/${encodeURIComponent(acId)}`, {
+      method: "PATCH",
+      body: JSON.stringify(data),
+    });
+  }
+
+  async verifyIssueAC(issueId: string, acId: string, data: VerifyIssueACRequest): Promise<IssueAcceptanceCriteria> {
+    return this.fetch(`/api/issues/${encodeURIComponent(issueId)}/ac/${encodeURIComponent(acId)}/verify`, {
+      method: "POST",
+      body: JSON.stringify(data),
+    });
+  }
+
+  async rejectIssueAC(issueId: string, acId: string, data: RejectIssueACRequest): Promise<IssueAcceptanceCriteria> {
+    return this.fetch(`/api/issues/${encodeURIComponent(issueId)}/ac/${encodeURIComponent(acId)}/reject`, {
+      method: "POST",
+      body: JSON.stringify(data),
+    });
+  }
+
+  async deleteIssueAC(issueId: string, acId: string): Promise<{ status: string }> {
+    return this.fetch(`/api/issues/${encodeURIComponent(issueId)}/ac/${encodeURIComponent(acId)}`, {
+      method: "DELETE",
+    });
+  }
+
+  async listIssueTodos(issueId: string): Promise<IssueTodo[]> {
+    return this.fetch(`/api/issues/${encodeURIComponent(issueId)}/todos`);
+  }
+
+  async createIssueTodo(issueId: string, data: CreateIssueTodoRequest): Promise<IssueTodo> {
+    return this.fetch(`/api/issues/${encodeURIComponent(issueId)}/todos`, {
+      method: "POST",
+      body: JSON.stringify(data),
+    });
+  }
+
+  async getIssueTodo(issueId: string, todoId: string): Promise<IssueTodo> {
+    return this.fetch(`/api/issues/${encodeURIComponent(issueId)}/todos/${encodeURIComponent(todoId)}`);
+  }
+
+  async updateIssueTodo(issueId: string, todoId: string, data: UpdateIssueTodoRequest): Promise<IssueTodo> {
+    return this.fetch(`/api/issues/${encodeURIComponent(issueId)}/todos/${encodeURIComponent(todoId)}`, {
+      method: "PATCH",
+      body: JSON.stringify(data),
+    });
+  }
+
+  async reopenIssueTodo(issueId: string, todoId: string, data?: ReopenIssueTodoRequest): Promise<IssueTodo> {
+    return this.fetch(`/api/issues/${encodeURIComponent(issueId)}/todos/${encodeURIComponent(todoId)}/reopen`, {
+      method: "POST",
+      body: JSON.stringify(data ?? {}),
+    });
+  }
+
+  async deleteIssueTodo(issueId: string, todoId: string): Promise<{ status: string }> {
+    return this.fetch(`/api/issues/${encodeURIComponent(issueId)}/todos/${encodeURIComponent(todoId)}`, {
+      method: "DELETE",
+    });
   }
 }

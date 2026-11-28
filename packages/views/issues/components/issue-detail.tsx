@@ -8,7 +8,6 @@ import {
   issueStatusCategory,
   statusCategoryOfKey,
 } from "@multica/core/issues";
-import type { IssueUnavailableReason } from "@multica/core/issues";
 import { useStatusLabel } from "../utils/status-label";
 import { priorityLabel } from "../utils/priority-label";
 import { useIssueStatuses } from "@multica/core/issue-statuses/hooks";
@@ -80,6 +79,7 @@ import { toast } from "sonner";
 import { errorCode } from "@multica/core/api";
 import { StatusIcon, PriorityIcon, StatusPicker, PriorityPicker, StagePicker, StartDatePicker, DueDatePicker, AssigneePicker, LabelPicker } from ".";
 import { IssueRelationsSection } from "./issue-relations-section";
+import { TaskLedgerSection } from "./task-ledger-section";
 import { maxSiblingStage } from "./pickers/stage-picker";
 import { CustomPropertyValueEditor, CustomPropertyValueDisplay } from "./pickers/custom-property-picker";
 import { Switch } from "@multica/ui/components/ui/switch";
@@ -108,7 +108,6 @@ import { collectThreadReplies, deriveThreadResolution } from "./thread-utils";
 import { IssueAgentHeaderChip } from "./issue-agent-header-chip";
 import { ExecutionLogSection } from "./execution-log-section";
 import { QuickActionsSection } from "./quick-actions-section";
-import { OuterLoopPlanPanel } from "./outerloop-plan-panel";
 import { PluginPanelSection } from "../../plugins";
 import { CredentialManager } from "../../credentials/credential-manager";
 import { PullRequestList } from "./pull-request-list";
@@ -360,8 +359,6 @@ function formatActivity(
       });
     case "description_updated":
       return t(($) => $.activity.description_updated);
-    case "credential_delivered":
-      return t(($) => $.activity.credential_delivered);
     case "task_completed":
       return t(($) => $.activity.task_completed, { count: entry.coalesced_count ?? 1 });
     case "task_failed":
@@ -1080,11 +1077,8 @@ interface IssueDetailProps {
 export function IssueNotFound({
   showBackLink = true,
   leading,
-  reason = "not_found",
 }: {
   showBackLink?: boolean;
-  /** The only reason classification the issue-read API exposes to clients. */
-  reason?: IssueUnavailableReason;
   /**
    * Host-supplied way back, mirrored from `IssueDetailProps.leadingAction`. A
    * host that hands its whole screen to this component (the inbox, on a phone)
@@ -1103,11 +1097,7 @@ export function IssueNotFound({
         <div className={cn("flex h-12 shrink-0 items-center gap-2 border-b", PAGE_GUTTER)}>{leading}</div>
       )}
       <div className="flex flex-1 min-h-0 flex-col items-center justify-center gap-3 text-body text-muted-foreground">
-        <p>
-          {reason === "cross_workspace_unavailable"
-            ? t(($) => $.detail.cross_workspace_unavailable)
-            : t(($) => $.detail.not_found)}
-        </p>
+        <p>{t(($) => $.detail.not_found)}</p>
         {showBackLink && (
           <Button variant="outline" size="sm" onClick={() => backOrReplace(paths.issues())}>
             <ChevronLeft className="mr-1 h-3.5 w-3.5" />
@@ -1192,13 +1182,6 @@ export function IssueDetailSkeleton({ leading }: { leading?: ReactNode } = {}) {
 // ---------------------------------------------------------------------------
 // IssueDetail
 // ---------------------------------------------------------------------------
-
-export function isCredentialRequestAvailable(
-  issue: Pick<Issue, "status" | "status_category">,
-  activityTruncated: boolean,
-): boolean {
-  return !activityTruncated && !issueBehavesAsAny(issue, ["done", "cancelled"]);
-}
 
 export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = true, layoutId = "multica_issue_detail_layout", highlightCommentId: highlightCommentIdProp, highlightDecisionId: highlightDecisionIdProp, highlightRequestToken: highlightRequestTokenProp, leadingAction }: IssueDetailProps) {
   const { t } = useT("issues");
@@ -1525,14 +1508,6 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
     toggleReaction: handleToggleReaction,
   } = useIssueTimeline(id, user?.id);
   const timelineSortMode = useTimelineSortStore((state) => state.mode);
-  const deliveredCredentialRequestIds = useMemo(() => new Set(
-    timeline.flatMap((entry) => {
-      if (entry.type !== "activity" || entry.action !== "credential_delivered") return [];
-      const requestCommentId = entry.details?.request_comment_id;
-      return typeof requestCommentId === "string" ? [requestCommentId] : [];
-    }),
-  ), [timeline]);
-  const credentialActivityTruncated = truncatedKinds.includes("activity");
   const setTimelineSortMode = useTimelineSortStore((state) => state.setMode);
   const timelineSortHintSeen = useTimelineSortStore((state) => state.hintSeen);
   const setTimelineSortHintSeen = useTimelineSortStore((state) => state.setHintSeen);
@@ -2243,18 +2218,13 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
       blocks.push({
         content: item.entry.content,
         attachments: item.entry.attachments,
-        fallbackAttachments: issueAttachments,
       });
       for (const reply of timelineView.threadReplies.get(item.entry.id) ?? []) {
-        blocks.push({
-          content: reply.content,
-          attachments: reply.attachments,
-          fallbackAttachments: issueAttachments,
-        });
+        blocks.push({ content: reply.content, attachments: reply.attachments });
       }
     }
     return collectImageSequence(blocks);
-  }, [issue?.description, descEditorAttachments, items, timelineView.threadReplies, issueAttachments]);
+  }, [issue?.description, descEditorAttachments, items, timelineView.threadReplies]);
 
   const handleDescriptionUpload = useCallback(
     async (file: File) => {
@@ -2751,8 +2721,8 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
           click an action they cannot run, and the refusal is explained at run
           time rather than by a silently shorter list. */}
       <QuickActionsSection issueId={issue.id} />
-      <OuterLoopPlanPanel issueId={issue.id} />
       <PluginPanelSection issueId={issue.id} />
+      <CredentialManager key={issue.id} issue={issue} />
 
       {/* Parent issue — standalone section, only when the issue has a
           parent. Setting a parent is reachable via the issue actions menu;
@@ -2819,8 +2789,6 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
           {pullRequestsOpen && <div className="pl-2"><PullRequestList issueId={id} showGitHub={githubSettings.prSidebar} /></div>}
         </div>
       )}
-
-	      <CredentialManager key={issue.id} issue={issue} />
 
       {/* Execution log — active runs + collapsed past runs, each carrying its
           own token spend, with the issue total on the section header.
@@ -2929,11 +2897,7 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
         <div className="pb-3" id={`comment-${item.id}`}>
           <CommentCard
             issueId={id}
-            issue={issue}
             entry={item.entry}
-            issueAttachments={issueAttachments}
-            credentialDelivered={deliveredCredentialRequestIds.has(item.entry.id)}
-            credentialRequestAvailable={isCredentialRequestAvailable(issue, credentialActivityTruncated)}
             replies={timelineView.threadReplies.get(item.id) ?? EMPTY_REPLIES}
             currentUserId={user?.id}
             canModerate={canModerateComments}
@@ -3516,6 +3480,10 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
               </IssueContextMenuProvider>
             );
           })()}
+
+          <div className="mt-8">
+            <TaskLedgerSection issueId={issue.id} description={issue.description} />
+          </div>
 
           <div className="my-8 border-t" />
 
