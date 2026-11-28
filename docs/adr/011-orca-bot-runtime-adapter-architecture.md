@@ -193,6 +193,98 @@ sequenceDiagram
 
 ---
 
+### 4.4 团队/小队与群聊多智能体兼容性架构：会话绑定契约设计
+
+在引入团队（Team）、小队（Squad）及群聊（Group Chat）协作后，**单个 Issue 不再由单一 Agent 独占**，而是涉及多个专业角色（如 Leader 蔡小星、Dev 顾小鱼、QA 金小欣、PM 谢小婷）交替执行。若简单将 `Issue => 单一 Bot Session` 1:1 绑定，会引发严重的**身份污染**、**上下文覆写**与**模型引擎冲突**（例如顾小鱼的 Pi/Claude 引擎无法复用蔡小星的 Antigravity 进程）。
+
+针对此问题，本架构提出**「执行层物理隔离 + 协作层群聊聚合」的双层分级绑定契约（Two-Layer Hybrid Binding）**：
+
+#### 4.4.1 双层绑定契约设计
+
+```mermaid
+flowchart TD
+    subgraph Multica 协作层
+        Issue[Multica Issue: RUYI-976] --> Squad[Assignee: squad:RUYI]
+        Squad --> TurnLeader[Turn 1: @蔡小星 架构设计]
+        Squad --> TurnDev[Turn 2: @顾小鱼 代码开发]
+        Squad --> TurnQA[Turn 3: @金小欣 独立验证]
+    end
+
+    subgraph Orca Adapter 映射中枢
+        Adapter[Orca Runtime Adapter]
+        Adapter -->|协作层: 逻辑群聊映射| GroupThread[Orca Group Chat Thread: #RUYI-976]
+        Adapter -->|执行层: 物理复合键映射| SessionPool[Worker Session Pool]
+    end
+
+    subgraph Orca 运行时执行层
+        SessionPool -->|Key: Issue+蔡小星| WorkerLeader[常驻 Worker: 蔡小星<br>Antigravity 进程 / 专属 Memory]
+        SessionPool -->|Key: Issue+顾小鱼| WorkerDev[常驻 Worker: 顾小鱼<br>Pi 进程 / 开发工作区]
+        SessionPool -->|Key: Issue+金小欣| WorkerQA[常驻 Worker: 金小欣<br>Pi 进程 / QA 凭证与探针]
+    end
+
+    GroupThread -.->|公开交付回放与提及流| Issue
+    WorkerLeader -->|公开发言/交接| GroupThread
+    WorkerDev -->|公开发言/交接| GroupThread
+    WorkerQA -->|公开发言/交接| GroupThread
+```
+
+1. **物理执行层（Execution Layer）：复合键隔离机制**
+   - **绑定规则**：底层物理 Worker Session 的 Key 为复合主键：
+     $$\text{SessionKey} = \text{Issue\_ID} + \text{":"} + \text{Agent\_ID}$$
+   - **运作机制**：
+     - 在同一 Issue 下，各成员 Bot 拥有属于自己的常驻 Worker 进程与终端 PTY；
+     - 蔡小星执行时复用 `(Issue, 蔡小星)` 的长连接会话；顾小鱼执行时复用 `(Issue, 顾小鱼)` 的长连接会话；
+     - **收益**：彻底消除身份覆盖风险，保护各 Bot 专属的 `SOUL.md`、`MEMORY.md` 与底层模型引擎；各自保持独立的长存活上下文与 0ms 进程热启动能力。
+
+2. **逻辑协作层（Collaboration Layer）：Orca 群聊（`bots.groups`）聚合机制**
+   - **绑定规则**：
+     - **Multica Squad / 项目空间** $\longrightarrow$ **Orca Group (`groupId`)**（如 “RUYI 工程小队”）；
+     - **Multica Issue** $\longrightarrow$ **Orca Group Thread (`threadId`)**（如 “#RUYI-976 架构与调研”）；
+   - **运作机制**：
+     - 利用 Orca 原生的 `bots.groups.send` 与 `replyMode: "mentions"` 能力；
+     - 当 Issue 中发生跨角色交接（如 Leader 蔡小星调度 `@顾小鱼`）时，Adapter 在该 Issue 对应的 Group Thread 内发布带有精准 `@顾小鱼` 提及的交接消​​息；
+     - 被提及的 Bot（顾小鱼）在群聊序列中被唤醒，并在其专属物理会话中执行任务；
+     - 任务执行完毕后，交付摘要与关键结论被同步写回 Group Thread。
+
+#### 4.4.2 团队/小队调度时序流
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant M as Multica Issue (RUYI-976)
+    participant A as Orca Adapter
+    participant G as Orca Group Thread (#RUYI-976)
+    participant B1 as Bot: 蔡小星 (Leader)
+    participant B2 as Bot: 顾小鱼 (Dev)
+
+    M->>A: 派发 Leader 任务 (assignee: squad)
+    A->>G: Group Chat 记录前序状态
+    A->>B1: 热调用 Session(RUYI-976:蔡小星)
+    B1-->>A: 架构设计完成，派发 @顾小鱼
+    A->>G: Group Chat 广播: @顾小鱼 交付开发
+    A-->>M: Leader 阶段完成，更新 Issue 评论
+
+    M->>A: 派发 Dev 任务 (调度顾小鱼)
+    Note over A: 检索 Session(RUYI-976:顾小鱼)
+    A->>B2: 热调用 Session(RUYI-976:顾小鱼) + 注入 Group 前序交接
+    B2-->>A: 代码开发完成，提交 PR
+    A->>G: Group Chat 广播: PR 就绪，交接 QA
+    A-->>M: Dev 阶段完成，进入 Review/QA
+```
+
+#### 4.4.3 兼容性与边界处理策略
+
+| 场景 | 冲突风险 | 架构解决机制 |
+| :--- | :--- | :--- |
+| **单 Agent 独立 Issue** | 无群聊需求，群聊开销冗余 | 降级为单 Bot 专属 Session 模式，`SessionKey = Issue_ID`，直连 Bot Chat。 |
+| **Squad 多 Agent 切换** | 角色切换导致上下文与模型冲撞 | 采用 `(Issue, Agent)` 复合键物理会话池，各角色独享常驻进程，各取所需。 |
+| **跨角色历史可见性** | 复合键物理会话之间无法感知彼此内部私有历史 | 通过 Orca Group Thread 汇聚各角色公开发言与交接摘要；调度新角色时将 Group Thread 最近的交接快照作为上下文输入前缀注入。 |
+| **并发任务冲突** | 同一 Issue 下多个 Agent 同时被触发 | 复合物理会话天然支持并行无锁运行；Group Thread 通过递增 `sequence` 保证消息严格全序。 |
+| **资源空闲回收** | 团队多角色常驻进程占用内存 | 为各物理 Worker 维持独立的 `IdleTTL`（默认 30 分钟），任务静默超期后优雅转入 `Destroyed`，释放 PTY 与内存。 |
+
+
+---
+
 ## 5. 最终推荐路线与分阶段实施计划
 
 ### 5.1 决策结论
