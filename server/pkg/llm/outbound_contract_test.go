@@ -39,9 +39,10 @@ func (c *countingHTTPClient) Do(req *http.Request) (*http.Response, error) {
 // layer — agent runs reach a model by their own path, which no variable here
 // governs. See the package doc.)
 //
-// Both consumers of this package send private chat content upstream — the
-// first message of a chat session (auto-titling) and the tail of a conversation
-// (follow-up questions). "Leave the LLM variables empty" is the documented
+// Three consumers of this package send bounded private task content upstream —
+// the first message of a chat session (auto-titling), the tail of a
+// conversation (follow-up questions), and redacted terminal-card context for
+// Lark. "Leave the LLM variables empty" is the documented
 // answer for an operator whose policy forbids that (.env.example, the docs
 // environment-variables pages, and GitHub issue #7162), so the behaviour has to
 // be a tested guarantee rather than something that happens to be true today.
@@ -123,6 +124,7 @@ const openAISDKImportPrefix = "github.com/openai/openai-go"
 // operators: these files, and only these, ask this layer to send something
 // upstream. The value is the summary each one is documented with.
 var documentedConsumers = map[string]string{
+	"internal/integrations/lark/terminal_summary.go":  "Lark terminal-card summary: bounded, redacted trigger, activity and final-result text",
 	"internal/handler/chat_title.go":                  "chat auto-titling: the first user message of a new chat session",
 	"internal/service/chat_quick_actions_generate.go": "chat follow-up questions: the tail of the conversation",
 	"pkg/promptperplexity/scorer.go":                  "prompt rule-perplexity scoring (D3): the workspace's own assembled system prompt, credential-scanned and PII-masked",

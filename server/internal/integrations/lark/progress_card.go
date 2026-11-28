@@ -13,7 +13,6 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/events"
 	"github.com/multica-ai/multica/server/pkg/protocol"
-	"github.com/multica-ai/multica/server/pkg/redact"
 )
 
 // The progress card is the process view of a run: one updatable card that
@@ -115,11 +114,12 @@ type ProgressEntry struct {
 
 // ProgressInput is the snapshot a ProgressRenderer turns into card JSON.
 type ProgressInput struct {
-	AgentName      string
-	State          ProgressState
-	Entries        []ProgressEntry
-	Truncated      bool
-	TriggerSummary string
+	AgentName       string
+	State           ProgressState
+	Entries         []ProgressEntry
+	Truncated       bool
+	TriggerSummary  string
+	TerminalSummary *TerminalSummary
 }
 
 // ProgressRenderer builds the progress card body. Separate from Renderer
@@ -175,7 +175,7 @@ func clampTerminalText(s string, limit int) string {
 }
 
 func progressDemand(summary string) string {
-	fields := strings.Fields(summary)
+	fields := strings.Fields(cleanTerminalText(summary))
 	visible := fields[:0]
 	for _, field := range fields {
 		// Trigger summaries can start with the channel's @Agent invocation.
@@ -186,7 +186,7 @@ func progressDemand(summary string) string {
 		visible = append(visible, field)
 	}
 	rawDemand := strings.Join(visible, " ")
-	if demand := clampTerminalText(collapseWhitespace(redact.Text(rawDemand)), 72); demand != "" {
+	if demand := clampTerminalText(rawDemand, 72); demand != "" {
 		return "需求：" + demand
 	}
 	return "需求：处理你的请求。"
@@ -219,11 +219,11 @@ func progressActions(entries []ProgressEntry) string {
 func progressResultDot(success *bool) string {
 	switch {
 	case success == nil:
-		return "⚪"
+		return "<font color='grey'>●</font>"
 	case *success:
-		return "🟢"
+		return "<font color='green'>●</font>"
 	default:
-		return "🔴"
+		return "<font color='red'>●</font>"
 	}
 }
 
@@ -240,9 +240,8 @@ func progressPlainTextElement(content string) map[string]any {
 }
 
 func progressToolResultElement(e ProgressEntry) map[string]any {
-	// plain_text applies text_color to every glyph, including the result emoji.
-	// Keep the dot outside the grey span so Lark renders its native green/red/
-	// neutral colour; escape the dynamic text before placing it in lark_md.
+	// lark_md keeps the status dot independently coloured while the dynamic
+	// description remains muted and escaped.
 	content := "<font color='grey'>工具结果 · </font>" + progressResultDot(e.Success) +
 		"<font color='grey'> " + html.EscapeString(e.Tool)
 	if e.Text != "" {
@@ -288,6 +287,10 @@ func (defaultProgressRenderer) RenderProgress(in ProgressInput) (CardRender, err
 		// Terminal patches retain the status header but reduce the body to safe,
 		// structured task context. Tool inputs and results are intentionally not
 		// shown after completion because they may be long or sensitive.
+		terminal := fallbackTerminalSummary(terminalSummaryInput(in.TriggerSummary, in.Entries, "", in.State))
+		if in.TerminalSummary != nil {
+			terminal = *in.TerminalSummary
+		}
 		doc := map[string]any{
 			"schema": "2.0",
 			"config": map[string]any{
@@ -299,9 +302,9 @@ func (defaultProgressRenderer) RenderProgress(in ProgressInput) (CardRender, err
 				"template": template,
 			},
 			"body": map[string]any{"elements": []any{
-				progressPlainTextElement(progressDemand(in.TriggerSummary)),
-				progressPlainTextElement(progressActions(in.Entries)),
-				progressPlainTextElement(progressTerminalResult(in.State)),
+				progressPlainTextElement("需求：" + terminal.Demand),
+				progressPlainTextElement("执行：" + terminal.Actions),
+				progressPlainTextElement("结果：" + terminal.Result),
 			}},
 		}
 		raw, err := json.Marshal(doc)
@@ -390,10 +393,11 @@ type progressCard struct {
 	chatKey  string
 	schedule *progressSchedule
 
-	agentName      string
-	entries        []ProgressEntry
-	truncated      bool
-	triggerSummary string
+	agentName       string
+	entries         []ProgressEntry
+	truncated       bool
+	triggerSummary  string
+	terminalSummary *TerminalSummary
 
 	cardMessageID string
 	rowID         pgtype.UUID
@@ -420,11 +424,12 @@ func (c *progressCard) appendEntry(e ProgressEntry) {
 
 func (c *progressCard) snapshot(state ProgressState) ProgressInput {
 	return ProgressInput{
-		AgentName:      c.agentName,
-		State:          state,
-		Entries:        append([]ProgressEntry(nil), c.entries...),
-		Truncated:      c.truncated,
-		TriggerSummary: c.triggerSummary,
+		AgentName:       c.agentName,
+		State:           state,
+		Entries:         append([]ProgressEntry(nil), c.entries...),
+		Truncated:       c.truncated,
+		TriggerSummary:  c.triggerSummary,
+		TerminalSummary: c.terminalSummary,
 	}
 }
 
@@ -535,10 +540,11 @@ func progressEntryFromPayload(payload protocol.TaskMessagePayload) (ProgressEntr
 			return ProgressEntry{}, false
 		}
 		e := ProgressEntry{Kind: ProgressEntryToolResult, Tool: payload.Tool, Text: progressResultSummary(payload.Output)}
+		ok := true // runtimes that omit IsError report a successful result frame.
 		if payload.IsError != nil {
-			ok := !*payload.IsError
-			e.Success = &ok
+			ok = !*payload.IsError
 		}
+		e.Success = &ok
 		return e, true
 	case "error":
 		return ProgressEntry{Kind: ProgressEntryError, Text: clampProgressText(payload.Content)}, true
@@ -631,7 +637,7 @@ func (pc *progressCards) push(ctx context.Context, e events.Event, entry Progres
 // happened — the seam is what makes the send-vs-finalize race observable.
 var progressFinalizeAfterCardRead func()
 
-func (pc *progressCards) finalize(ctx context.Context, taskID, chatSessionID pgtype.UUID, state ProgressState) error {
+func (pc *progressCards) finalize(ctx context.Context, taskID, chatSessionID pgtype.UUID, state ProgressState, finalResult string) error {
 	taskKey := uuidString(taskID)
 	card := pc.lookup(taskKey)
 	if card == nil {
@@ -650,7 +656,21 @@ func (pc *progressCards) finalize(ctx context.Context, taskID, chatSessionID pgt
 		return nil
 	}
 	card.finalized = true
+	source := terminalSummaryInput(card.triggerSummary, append([]ProgressEntry(nil), card.entries...), finalResult, state)
 	card.mu.Unlock()
+
+	if pc.p.terminalSummarizer != nil {
+		summaryCtx, cancel := context.WithTimeout(ctx, terminalSummaryTimeout)
+		summary, summaryErr := pc.p.terminalSummarizer.Summarize(summaryCtx, source)
+		cancel()
+		if summaryErr == nil {
+			card.mu.Lock()
+			card.terminalSummary = &summary
+			card.mu.Unlock()
+		} else {
+			pc.p.cfg.Logger.Debug("lark progress card: terminal summary fallback", "task_id", taskKey, "error", summaryErr)
+		}
+	}
 	if progressFinalizeAfterCardRead != nil {
 		progressFinalizeAfterCardRead()
 	}
@@ -701,13 +721,13 @@ func (pc *progressCards) finalize(ctx context.Context, taskID, chatSessionID pgt
 // progressFinalBudget. Process exit can drop an in-flight finalization — a
 // narrower window than the backoff debt the event-ctx version already could
 // not cover.
-func (pc *progressCards) finalizeLater(taskID, chatSessionID pgtype.UUID, state ProgressState) {
+func (pc *progressCards) finalizeLater(taskID, chatSessionID pgtype.UUID, state ProgressState, finalResult string) {
 	pc.wg.Add(1)
 	go func() {
 		defer pc.wg.Done()
 		ctx, cancel := context.WithTimeout(context.Background(), progressFinalBudget)
 		defer cancel()
-		if err := pc.finalize(ctx, taskID, chatSessionID, state); err != nil {
+		if err := pc.finalize(ctx, taskID, chatSessionID, state, finalResult); err != nil {
 			pc.p.cfg.Logger.Warn("lark progress card: final frame failed",
 				"task_id", uuidString(taskID),
 				"chat_session_id", uuidString(chatSessionID),

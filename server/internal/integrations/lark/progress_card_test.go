@@ -19,6 +19,17 @@ import (
 // business code, so it must NOT be read as a rate limit.
 var errProgressPatchBoom = errors.New("fake: patch transport failure")
 
+type fixedTerminalSummarizer struct {
+	summary TerminalSummary
+	err     error
+	input   TerminalSummaryInput
+}
+
+func (s *fixedTerminalSummarizer) Summarize(_ context.Context, in TerminalSummaryInput) (TerminalSummary, error) {
+	s.input = in
+	return s.summary, s.err
+}
+
 // nowMillisString is Lark's epoch-millisecond create_time format, which the
 // typing indicator uses to reject stale replays.
 func nowMillisString() string {
@@ -217,7 +228,7 @@ func TestProgressCardRunningEntriesKeepResultDotsColored(t *testing.T) {
 			if _, hasGlobalGrey := text["text_color"]; hasGlobalGrey {
 				t.Fatalf("tool result must not globally grey the status dot; got %#v", text)
 			}
-			want := "<font color='grey'>工具结果 · </font>🔴<font color='grey'> Read · permission denied</font>"
+			want := "<font color='grey'>工具结果 · </font><font color='red'>●</font><font color='grey'> Read · permission denied</font>"
 			if content != want {
 				t.Errorf("tool result content = %q, want %q", content, want)
 			}
@@ -328,6 +339,33 @@ func TestProgressCardSendsFirstFrameThenPatches(t *testing.T) {
 	}
 }
 
+func TestProgressCardUsesInjectedTerminalSummaryWithoutReplacingReply(t *testing.T) {
+	p, q, api, _ := newProgressTestPatcher(t)
+	summarizer := &fixedTerminalSummarizer{summary: TerminalSummary{
+		Demand: "检查登录流程", Actions: "完成接口核对", Result: "登录流程已确认",
+	}}
+	p.terminalSummarizer = summarizer
+	taskID := "ef121212-ee12-ee12-ee12-eeeeeeeeeeee"
+	sessionID := uuidString(q.binding.ChatSessionID)
+
+	p.handleTaskMessage(progressFrame(taskID, sessionID, 1, protocol.TaskMessagePayload{Type: "text", Content: "checking login"}))
+	p.handleEvent(events.Event{Type: protocol.EventChatDone, TaskID: taskID, ChatSessionID: sessionID,
+		Payload: protocol.ChatDonePayload{TaskID: taskID, ChatSessionID: sessionID, Content: "完整最终答复"}})
+	p.progress.waitIdle()
+
+	api.mu.Lock()
+	defer api.mu.Unlock()
+	if len(api.textSent) != 1 || api.textSent[0].Text != "完整最终答复" {
+		t.Fatalf("summary must not replace final text reply: %+v", api.textSent)
+	}
+	if len(api.patched) != 1 || !strings.Contains(api.patched[0].CardJSON, "执行：完成接口核对") ||
+		!strings.Contains(api.patched[0].CardJSON, "结果：登录流程已确认") {
+		t.Fatalf("terminal patch did not use injected summary: %+v", api.patched)
+	}
+	if summarizer.input.FinalResult != "完整最终答复" || len(summarizer.input.Activities) != 1 {
+		t.Fatalf("summary input lost task context: %#v", summarizer.input)
+	}
+}
 // TestProgressCardFinalizesNoToolRunWithSeparateReply covers a task that only
 // emitted ordinary text progress. It must still compact its card and preserve
 // the complete final reply as its own Lark text message.
@@ -1119,9 +1157,9 @@ func TestProgressCardToolResultDotFollowsSuccess(t *testing.T) {
 		t.Errorf("tool-use rows = %q, want compact plain text rows", rows)
 	}
 	wantResultRows := []string{
-		"<font color='grey'>工具结果 · </font>🟢<font color='grey'> Bash · clean tree</font>",
-		"<font color='grey'>工具结果 · </font>🔴<font color='grey'> Bash · boom</font>",
-		"<font color='grey'>工具结果 · </font>⚪<font color='grey'> Read</font>",
+		"<font color='grey'>工具结果 · </font><font color='green'>●</font><font color='grey'> Bash · clean tree</font>",
+		"<font color='grey'>工具结果 · </font><font color='red'>●</font><font color='grey'> Bash · boom</font>",
+		"<font color='grey'>工具结果 · </font><font color='grey'>●</font><font color='grey'> Read</font>",
 	}
 	for i, want := range wantResultRows {
 		got := rows[[]int{1, 2, 4}[i]]
@@ -1159,7 +1197,7 @@ func TestProgressCardCarriesToolTitleAndResultSummary(t *testing.T) {
 		t.Errorf("card must carry the compact tool title; got %s", last)
 	}
 	rows := progressPlainTextRows(t, last)
-	if len(rows) != 2 || rows[1] != "<font color='grey'>工具结果 · </font>⚪<font color='grey'> Bash · clean tree</font>" {
+	if len(rows) != 2 || rows[1] != "<font color='grey'>工具结果 · </font><font color='green'>●</font><font color='grey'> Bash · clean tree</font>" {
 		t.Errorf("card must carry the compact unwrapped, colour-safe result preview; rows=%q", rows)
 	}
 }
