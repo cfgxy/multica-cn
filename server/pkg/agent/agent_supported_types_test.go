@@ -56,7 +56,7 @@ func TestSupportedTypesMatchesMigrationWhitelist(t *testing.T) {
 		"opencode": true, "codearts": true, "deveco": true, "openclaw": true, "hermes": true,
 		"pi": true, "cursor": true, "kimi": true, "reasonix": true, "dsh": true, "kiro": true, "antigravity": true,
 		"qoder": true, "qoderclicn": true, "traecli": true, "grok": true, "qwen": true, "qwenpaw": true, "mcode": true,
-		"dim": true, "zeroclaw": true, "deerflow": true, "zcode": true,
+		"dim": true, "zeroclaw": true, "deerflow": true, "zcode": true, "orca": true,
 		"gemini_live": true,
 	}
 	if len(SupportedTypes) != len(want) {

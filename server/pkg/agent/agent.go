@@ -470,6 +470,7 @@ var SupportedTypes = []string{
 	"zeroclaw",
 	"deerflow",
 	"zcode",
+	"orca",
 	// gemini_live is the first API-backed voice family (RUYI-425): a runtime
 	// profile family with no CLI binary. New() deliberately does not dispatch
 	// it — see the voiceFamily case there.
@@ -506,6 +507,7 @@ var resumeRejectionUndetectable = map[string]bool{
 	"deveco":      true,
 	"opencode":    true,
 	"codearts":    true,
+	"orca":        true,
 }
 
 // ResumeRejectionUndetectable reports whether agentType is a backend that
@@ -591,6 +593,8 @@ func New(agentType string, cfg Config) (Backend, error) {
 		return &deerflowBackend{cfg: cfg}, nil
 	case "zcode":
 		return &zcodeBackend{cfg: cfg}, nil
+	case "orca":
+		return &orcaBackend{cfg: cfg}, nil
 	default:
 		return nil, fmt.Errorf("unknown agent type: %q (supported: %s)", agentType, strings.Join(SupportedTypes, ", "))
 	}
@@ -640,6 +644,7 @@ var launchHeaders = map[string]string{
 	"zeroclaw":    "zeroclaw acp",
 	"deerflow":    "deerflow-acp acp",
 	"zcode":       "zcode-acp acp",
+	"orca":        "orca agent launch (json)",
 	// Voice families have no CLI command to preview; the header is a mode
 	// label so the UI skeleton contract stays universal (RUYI-425).
 	"gemini_live": "Gemini Live (realtime voice API)",

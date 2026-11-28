@@ -323,6 +323,24 @@ var probeAgentCLIs = func() map[string]AgentEntry {
 	if e, ok := probe("MULTICA_ZCODE_PATH", "zcode-acp", "MULTICA_ZCODE_MODEL"); ok {
 		agents["zcode"] = e
 	}
+	// Orca CLI (`orca`) runs Stably Orca CLI via `orca agent launch` and `orca agent read`.
+	// We guard against the Linux GNOME desktop screen reader binary (/usr/bin/orca).
+	orcaPathEnv := strings.TrimSpace(os.Getenv("MULTICA_ORCA_PATH"))
+	if e, ok := probe("MULTICA_ORCA_PATH", "orca", "MULTICA_ORCA_MODEL"); ok && !agent.IsGnomeScreenReader(e.Path) {
+		agents["orca"] = e
+	} else if orcaPathEnv == "" {
+		home, err := os.UserHomeDir()
+		if err == nil {
+			candidate := filepath.Join(home, ".orca", "cli", "bin", "orca")
+			if path, resolveErr := resolveAgentExecutablePath(candidate); resolveErr == nil && !agent.IsGnomeScreenReader(path) {
+				agents["orca"] = AgentEntry{
+					Path:    path,
+					Command: "orca",
+					Model:   strings.TrimSpace(os.Getenv("MULTICA_ORCA_MODEL")),
+				}
+			}
+		}
+	}
 	return agents
 }
 
