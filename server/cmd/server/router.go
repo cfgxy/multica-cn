@@ -727,7 +727,9 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 				// counters are the only place an operator sees storage that
 				// stopped being readable.
 				larkPatcherOpts = append(larkPatcherOpts,
-					lark.WithOutboundMetrics(larkMetricsOrNil(opts.LarkMetrics)))
+					lark.WithOutboundMetrics(larkMetricsOrNil(opts.LarkMetrics)),
+					lark.WithTerminalSummarizer(lark.NewLLMTerminalSummarizer(h.LLM)),
+				)
 				patcher := lark.NewPatcher(cs, installSvc, larkClient, lark.PatcherConfig{}, larkPatcherOpts...)
 				patcher.Register(bus)
 

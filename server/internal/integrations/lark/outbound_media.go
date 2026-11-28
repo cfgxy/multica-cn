@@ -184,6 +184,13 @@ func WithOutboundMetrics(m Metrics) PatcherOption {
 	return func(p *Patcher) { p.metrics = orNopMetrics(m) }
 }
 
+// WithTerminalSummarizer enables best-effort LLM terminal summaries. A nil or
+// failing summarizer is safe because progress_card.go supplies a deterministic
+// redacted fallback.
+func WithTerminalSummarizer(s TerminalSummarizer) PatcherOption {
+	return func(p *Patcher) { p.terminalSummarizer = s }
+}
+
 // mayCarryAttachments reports whether this turn is worth the lookups even
 // though the agent may have said nothing. Everything it checks is already in
 // hand, so a deployment with no storage — or an event naming no message —
