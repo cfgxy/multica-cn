@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -69,14 +70,147 @@ func resolveOrcaExecutablePath(cfg Config) (string, error) {
 	return resolved, nil
 }
 
-func buildOrcaLaunchArgs(prompt string, opts ExecOptions) []string {
+func isGitWorkspace(path string) bool {
+	cur := filepath.Clean(path)
+	for {
+		gitPath := filepath.Join(cur, ".git")
+		if _, err := os.Stat(gitPath); err == nil {
+			return true
+		}
+		parent := filepath.Dir(cur)
+		if parent == cur || parent == "" {
+			break
+		}
+		cur = parent
+	}
+	return false
+}
+
+var (
+	orcaWorktreeCacheMu sync.RWMutex
+	orcaWorktreeCache   = make(map[string]string)
+)
+
+type orcaWorktreeShowOutput struct {
+	ID     string `json:"id"`
+	OK     bool   `json:"ok"`
+	Result struct {
+		Worktree struct {
+			ID      string `json:"id"`
+			Path    string `json:"path"`
+			Address struct {
+				Worktree string `json:"worktree"`
+			} `json:"address"`
+		} `json:"worktree"`
+	} `json:"result"`
+	Error *struct {
+		Code    string `json:"code"`
+		Message string `json:"message"`
+	} `json:"error"`
+}
+
+type orcaRepoAddOutput struct {
+	ID     string `json:"id"`
+	OK     bool   `json:"ok"`
+	Result struct {
+		Repo struct {
+			ID   string `json:"id"`
+			Path string `json:"path"`
+			Kind string `json:"kind"`
+		} `json:"repo"`
+	} `json:"result"`
+	Error *struct {
+		Code    string `json:"code"`
+		Message string `json:"message"`
+	} `json:"error"`
+}
+
+// resolveOrcaWorktreeSelector ensures the target directory is known to Orca
+// as an active worktree and returns a selector recognized by `orca agent launch`.
+// If the directory has not been registered yet, it auto-registers it with `orca repo add`.
+func resolveOrcaWorktreeSelector(ctx context.Context, execPath, cwd string, cfg Config) (string, error) {
+	if cwd == "" {
+		return "", nil
+	}
+	cleanCwd := filepath.Clean(cwd)
+
+	orcaWorktreeCacheMu.RLock()
+	cached, ok := orcaWorktreeCache[cleanCwd]
+	orcaWorktreeCacheMu.RUnlock()
+	if ok && cached != "" {
+		return cached, nil
+	}
+
+	// 1. Probe if cwd is already an active Orca worktree
+	showCmd := cfg.commandAt(execPath).exec(ctx, "worktree", "show", "--worktree", "path:"+cleanCwd, "--json")
+	showBytes, _ := outputOwned(showCmd, cfg.Logger)
+	var showOut orcaWorktreeShowOutput
+	if err := json.Unmarshal(showBytes, &showOut); err == nil && showOut.OK {
+		selector := "path:" + cleanCwd
+		if showOut.Result.Worktree.Address.Worktree != "" {
+			selector = showOut.Result.Worktree.Address.Worktree
+		} else if showOut.Result.Worktree.ID != "" {
+			selector = "id:" + showOut.Result.Worktree.ID
+		}
+		orcaWorktreeCacheMu.Lock()
+		orcaWorktreeCache[cleanCwd] = selector
+		orcaWorktreeCacheMu.Unlock()
+		return selector, nil
+	}
+
+	// 2. Auto-register with orca repo add
+	kind := "folder"
+	if isGitWorkspace(cleanCwd) {
+		kind = "git"
+	}
+	addCmd := cfg.commandAt(execPath).exec(ctx, "repo", "add", "--path", cleanCwd, "--kind", kind, "--json")
+	addBytes, addErr := outputOwned(addCmd, cfg.Logger)
+	var addOut orcaRepoAddOutput
+	if addErr != nil || json.Unmarshal(addBytes, &addOut) != nil || !addOut.OK {
+		if kind == "git" {
+			fallbackCmd := cfg.commandAt(execPath).exec(ctx, "repo", "add", "--path", cleanCwd, "--kind", "folder", "--json")
+			addBytes, _ = outputOwned(fallbackCmd, cfg.Logger)
+			_ = json.Unmarshal(addBytes, &addOut)
+		}
+	}
+
+	// 3. Re-verify after registration
+	reShowCmd := cfg.commandAt(execPath).exec(ctx, "worktree", "show", "--worktree", "path:"+cleanCwd, "--json")
+	reShowBytes, _ := outputOwned(reShowCmd, cfg.Logger)
+	var reShowOut orcaWorktreeShowOutput
+	if err := json.Unmarshal(reShowBytes, &reShowOut); err == nil && reShowOut.OK {
+		selector := "path:" + cleanCwd
+		if reShowOut.Result.Worktree.Address.Worktree != "" {
+			selector = reShowOut.Result.Worktree.Address.Worktree
+		} else if reShowOut.Result.Worktree.ID != "" {
+			selector = "id:" + reShowOut.Result.Worktree.ID
+		}
+		orcaWorktreeCacheMu.Lock()
+		orcaWorktreeCache[cleanCwd] = selector
+		orcaWorktreeCacheMu.Unlock()
+		return selector, nil
+	}
+
+	if reShowOut.Error != nil && reShowOut.Error.Code != "" {
+		return "", fmt.Errorf("orca worktree selector failed for %q (%s): %s", cleanCwd, reShowOut.Error.Code, reShowOut.Error.Message)
+	}
+	return "", fmt.Errorf("orca worktree selector failed for %q: selector_not_found", cleanCwd)
+}
+
+func buildOrcaLaunchArgs(prompt string, opts ExecOptions, worktreeSelector ...string) []string {
 	agentName := "pi"
 	if opts.Model == "claude" || opts.Model == "codex" || opts.Model == "pi" || opts.Model == "antigravity" {
 		agentName = opts.Model
 	}
 	args := []string{"agent", "launch", "--agent", agentName, "--prompt", prompt}
-	if opts.Cwd != "" {
-		args = append(args, "--worktree", "path:"+filepath.Clean(opts.Cwd))
+	var selector string
+	if len(worktreeSelector) > 0 && worktreeSelector[0] != "" {
+		selector = worktreeSelector[0]
+	} else if opts.Cwd != "" {
+		selector = "path:" + filepath.Clean(opts.Cwd)
+	}
+	if selector != "" {
+		args = append(args, "--worktree", selector)
 	}
 	if opts.Model != "" && opts.Model != agentName {
 		args = append(args, "--model", opts.Model)
@@ -125,7 +259,17 @@ func (b *orcaBackend) Execute(ctx context.Context, prompt string, opts ExecOptio
 	timeout := opts.Timeout
 	runCtx, cancel := runContext(ctx, timeout)
 
-	launchArgs := buildOrcaLaunchArgs(prompt, opts)
+	var worktreeSelector string
+	if opts.Cwd != "" {
+		selector, selErr := resolveOrcaWorktreeSelector(runCtx, execPath, opts.Cwd, b.cfg)
+		if selErr != nil {
+			cancel()
+			return nil, selErr
+		}
+		worktreeSelector = selector
+	}
+
+	launchArgs := buildOrcaLaunchArgs(prompt, opts, worktreeSelector)
 	cmd := b.cfg.commandAt(execPath).exec(runCtx, launchArgs...)
 	hideAgentWindow(cmd)
 	b.cfg.logAgentCommand(cmd, newAgentCommandLogArgs(launchArgs))

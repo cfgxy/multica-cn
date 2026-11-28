@@ -1,11 +1,13 @@
 package agent
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestOrcaBuildLaunchArgs(t *testing.T) {
@@ -157,5 +159,137 @@ func TestOrcaReadOutputParsing(t *testing.T) {
 func TestOrcaResumeRejectionUndetectable(t *testing.T) {
 	if !ResumeRejectionUndetectable("orca") {
 		t.Errorf("expected ResumeRejectionUndetectable(\"orca\") = true")
+	}
+}
+
+func TestOrcaBuildLaunchArgsCustomSelector(t *testing.T) {
+	opts := ExecOptions{
+		Cwd:   "/workspace/project",
+		Model: "pi",
+	}
+	customSelector := "identity:wt2:local:test-instance-id"
+	args := buildOrcaLaunchArgs("test prompt", opts, customSelector)
+
+	foundSelector := false
+	for i := 0; i < len(args)-1; i++ {
+		if args[i] == "--worktree" && args[i+1] == customSelector {
+			foundSelector = true
+			break
+		}
+	}
+	if !foundSelector {
+		t.Errorf("expected --worktree %s in %v", customSelector, args)
+	}
+}
+
+func TestOrcaWorktreeShowOutputParsing(t *testing.T) {
+	rawJSON := `{
+		"id": "show-123",
+		"ok": true,
+		"result": {
+			"worktree": {
+				"id": "repo-uuid::/home/user/project",
+				"path": "/home/user/project",
+				"address": {
+					"worktree": "identity:wt2:local:instance-uuid"
+				}
+			}
+		}
+	}`
+	var out orcaWorktreeShowOutput
+	if err := json.Unmarshal([]byte(rawJSON), &out); err != nil {
+		t.Fatalf("unmarshal error: %v", err)
+	}
+	if !out.OK {
+		t.Errorf("expected ok = true")
+	}
+	if out.Result.Worktree.Address.Worktree != "identity:wt2:local:instance-uuid" {
+		t.Errorf("unexpected worktree address: %q", out.Result.Worktree.Address.Worktree)
+	}
+	if out.Result.Worktree.ID != "repo-uuid::/home/user/project" {
+		t.Errorf("unexpected worktree id: %q", out.Result.Worktree.ID)
+	}
+}
+
+func TestOrcaWorktreeSelectorNotFoundParsing(t *testing.T) {
+	rawJSON := `{
+		"id": "show-err",
+		"ok": false,
+		"error": {
+			"code": "selector_not_found",
+			"message": "selector_not_found"
+		}
+	}`
+	var out orcaWorktreeShowOutput
+	if err := json.Unmarshal([]byte(rawJSON), &out); err != nil {
+		t.Fatalf("unmarshal error: %v", err)
+	}
+	if out.OK {
+		t.Errorf("expected ok = false")
+	}
+	if out.Error == nil || out.Error.Code != "selector_not_found" {
+		t.Errorf("expected error.code = selector_not_found, got %+v", out.Error)
+	}
+}
+
+func TestOrcaRepoAddOutputParsing(t *testing.T) {
+	rawJSON := `{
+		"id": "add-123",
+		"ok": true,
+		"result": {
+			"repo": {
+				"id": "repo-uuid-456",
+				"path": "/workspace/multica-cn",
+				"kind": "git"
+			}
+		}
+	}`
+	var out orcaRepoAddOutput
+	if err := json.Unmarshal([]byte(rawJSON), &out); err != nil {
+		t.Fatalf("unmarshal error: %v", err)
+	}
+	if !out.OK {
+		t.Errorf("expected ok = true")
+	}
+	if out.Result.Repo.ID != "repo-uuid-456" || out.Result.Repo.Kind != "git" {
+		t.Errorf("unexpected repo output: %+v", out.Result.Repo)
+	}
+}
+
+func TestOrcaResolveWorktreeSelectorIntegration(t *testing.T) {
+	cfg := Config{}
+	execPath, err := resolveOrcaExecutablePath(cfg)
+	if err != nil {
+		t.Skipf("skipping integration test: orca executable not found: %v", err)
+	}
+
+	tmpDir := t.TempDir()
+	cleanTmp := filepath.Clean(tmpDir)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	// 1. Initially unregistered temp directory should be auto-registered and resolved
+	selector, err := resolveOrcaWorktreeSelector(ctx, execPath, cleanTmp, cfg)
+	if err != nil {
+		t.Fatalf("resolveOrcaWorktreeSelector failed on temp dir: %v", err)
+	}
+	if selector == "" {
+		t.Fatalf("expected non-empty selector for %s", cleanTmp)
+	}
+
+	// 2. Subsequent call should hit cache or show
+	cachedSelector, err := resolveOrcaWorktreeSelector(ctx, execPath, cleanTmp, cfg)
+	if err != nil {
+		t.Fatalf("second resolveOrcaWorktreeSelector call failed: %v", err)
+	}
+	if cachedSelector != selector {
+		t.Errorf("expected cached selector %q, got %q", selector, cachedSelector)
+	}
+
+	// 3. Negative case: non-existent inaccessible path returns error
+	_, err = resolveOrcaWorktreeSelector(ctx, execPath, "/nonexistent/inaccessible/path/that/cannot/exist", cfg)
+	if err == nil {
+		t.Errorf("expected error for nonexistent path, got nil")
 	}
 }
