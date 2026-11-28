@@ -305,6 +305,13 @@ func writeAvailableCommands(b *strings.Builder, ctx TaskContextForEnv) {
 	b.WriteString("- `multica issue metadata list <issue-id> [--output json]` — list KV metadata.\n")
 	b.WriteString("- `multica issue metadata set <issue-id> --key <k> --value <v> [--type string|number|bool]` — pin or overwrite a key.\n")
 	b.WriteString("- `multica issue metadata delete <issue-id> --key <k>` — remove a key.\n")
+	b.WriteString("- `multica issue ac list <issue-id> [--output json]` — list structured acceptance criteria.\n")
+	b.WriteString("- `multica issue ac extract <issue-id>` — extract ACs from issue description into durable items.\n")
+	b.WriteString("- `multica issue todo list <issue-id> [--status X] [--output json]` — list dynamic TODO execution ledger items.\n")
+	b.WriteString("- `multica issue todo add <issue-id> --title \"...\" [--status X] [--next-step \"...\"] [--ac <key>]` — add a dynamic TODO item.\n")
+	b.WriteString("- `multica issue todo update <issue-id> <todo-id> [--status X] [--next-step \"...\"] [--blocked-reason \"...\"]` — update execution progress or blockers.\n")
+	b.WriteString("- `multica issue todo reopen <issue-id> <todo-id> [--next-step \"...\"]` — reopen a completed or blocked TODO item.\n")
+	b.WriteString("- `multica issue ledger <issue-id> [--output json]` — unified AC, dynamic TODO, and audit trail view.\n")
 	b.WriteString("- `multica repo checkout <url> [--ref <branch-or-sha>]` — repository checkout on a dedicated branch.\n\n")
 	// Squad maintenance is squad-leader surface: an agent that leads no squad
 	// has no squad to change roles in, so this shipped to every run as dead
