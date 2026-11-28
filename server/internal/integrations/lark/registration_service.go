@@ -325,6 +325,15 @@ type BeginInstallResult struct {
 	PollIntervalSeconds int
 }
 
+// BeginPermissionGrant requests a device authorization from Lark and returns
+// the decorated verification QR code URL for granting permissions to an existing app.
+func (s *RegistrationService) BeginPermissionGrant(ctx context.Context, region Region, appID string) (string, error) {
+	if s == nil || s.client == nil {
+		return "", errors.New("lark registration: service or client not configured")
+	}
+	return s.client.BeginPermissionGrant(ctx, region, appID)
+}
+
 // BeginInstall opens a fresh device-flow session and kicks off the
 // background polling goroutine. The returned payload feeds the QR-code
 // dialog on the frontend; the polling goroutine runs until success,

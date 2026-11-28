@@ -156,7 +156,8 @@ func TestRegistrationClient_Begin_OmitsNameWhenPresetEmpty(t *testing.T) {
 func TestPermissionGrantQRCodeURLUsesExistingAppAndCompleteAddons(t *testing.T) {
 	t.Parallel()
 
-	qrURL, err := PermissionGrantQRCodeURL(RegionFeishu, "cli_existing")
+	raw := "https://accounts.feishu.cn/oauth/v1/qrcode?code=abc"
+	qrURL, err := PermissionGrantQRCodeURL(raw, "multica", "cli_existing")
 	if err != nil {
 		t.Fatalf("PermissionGrantQRCodeURL: %v", err)
 	}
@@ -164,8 +165,17 @@ func TestPermissionGrantQRCodeURLUsesExistingAppAndCompleteAddons(t *testing.T) 
 	if err != nil {
 		t.Fatalf("parse QR URL: %v", err)
 	}
+	if u.Host != "accounts.feishu.cn" || u.Path != "/oauth/v1/qrcode" {
+		t.Fatalf("host/path = %s%s, want accounts.feishu.cn/oauth/v1/qrcode", u.Host, u.Path)
+	}
+	if got := u.Query().Get("code"); got != "abc" {
+		t.Fatalf("code = %q, want abc", got)
+	}
 	if got := u.Query().Get("clientID"); got != "cli_existing" {
 		t.Fatalf("clientID = %q, want existing app id", got)
+	}
+	if _, ok := u.Query()["name"]; ok {
+		t.Fatalf("grant QR URL must omit name preset")
 	}
 	var addons PermissionAddons
 	if err := json.Unmarshal([]byte(u.Query().Get("addons")), &addons); err != nil {
@@ -200,9 +210,48 @@ func assertRegistrationAddons(t *testing.T, addons PermissionAddons) {
 func TestPermissionGrantQRCodeURLRejectsEmptyAppID(t *testing.T) {
 	t.Parallel()
 
-	if _, err := PermissionGrantQRCodeURL(RegionFeishu, ""); err == nil {
+	if _, err := PermissionGrantQRCodeURL("https://accounts.feishu.cn/oauth/v1/qrcode?code=abc", "multica", ""); err == nil {
 		t.Fatal("expected empty app id to fail")
 	}
+}
+
+func TestRegistrationClient_BeginPermissionGrant_HappyPath(t *testing.T) {
+	fake := newRegistrationFake(t)
+	fake.stubBegin(map[string]any{
+		"device_code":               "dc_grant",
+		"verification_uri_complete": "https://accounts.feishu.cn/oauth/v1/qrcode?code=grant_abc",
+		"verification_uri":          "https://accounts.feishu.cn/oauth/v1/qrcode",
+		"user_code":                 "GRANT-1234",
+		"interval":                  2,
+		"expire_in":                 300,
+	})
+
+	c := NewRegistrationClient(RegistrationConfig{Domain: fake.URL()})
+	qrURL, err := c.BeginPermissionGrant(context.Background(), RegionFeishu, "cli_existing_bot")
+	if err != nil {
+		t.Fatalf("BeginPermissionGrant: %v", err)
+	}
+	u, err := url.Parse(qrURL)
+	if err != nil {
+		t.Fatalf("parse qrURL: %v", err)
+	}
+	if u.Host != "accounts.feishu.cn" || u.Path != "/oauth/v1/qrcode" {
+		t.Fatalf("host/path = %s%s, want accounts.feishu.cn/oauth/v1/qrcode", u.Host, u.Path)
+	}
+	if got := u.Query().Get("code"); got != "grant_abc" {
+		t.Fatalf("code = %q, want grant_abc", got)
+	}
+	if got := u.Query().Get("clientID"); got != "cli_existing_bot" {
+		t.Fatalf("clientID = %q, want cli_existing_bot", got)
+	}
+	if _, ok := u.Query()["name"]; ok {
+		t.Fatalf("grant QR URL must omit name preset")
+	}
+	var addons PermissionAddons
+	if err := json.Unmarshal([]byte(u.Query().Get("addons")), &addons); err != nil {
+		t.Fatalf("decode addons: %v", err)
+	}
+	assertRegistrationAddons(t, addons)
 }
 
 // TestRegistrationClient_Begin_RegionLarkBeginsOnLarksuite pins the
