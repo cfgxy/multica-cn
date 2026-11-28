@@ -34,6 +34,13 @@ import type {
   ListIssuesCache,
   MoveIssueRequest,
   UpdateIssueRequest,
+  CreateIssueACRequest,
+  UpdateIssueACRequest,
+  VerifyIssueACRequest,
+  RejectIssueACRequest,
+  CreateIssueTodoRequest,
+  UpdateIssueTodoRequest,
+  ReopenIssueTodoRequest,
 } from "../types";
 import type { TimelineEntry, IssueSubscriber, Reaction } from "../types";
 import { sortTimelineEntriesAsc } from "./timeline-sort";
@@ -1160,5 +1167,96 @@ export function useUnsubscribeFromIssueSubtree(issueId: string) {
     onSettled: () => {
       qc.invalidateQueries({ queryKey: issueKeys.subscribersAll() });
     },
+  });
+}
+
+function invalidateIssueLedger(qc: ReturnType<typeof useQueryClient>, issueId: string) {
+  qc.invalidateQueries({ queryKey: issueKeys.ledger(issueId) });
+  qc.invalidateQueries({ queryKey: issueKeys.acs(issueId) });
+  qc.invalidateQueries({ queryKey: issueKeys.todos(issueId) });
+}
+
+export function useExtractACs(issueId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (data?: { description?: string }) => api.extractIssueACs(issueId, data),
+    onSuccess: () => invalidateIssueLedger(qc, issueId),
+  });
+}
+
+export function useCreateAC(issueId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (data: CreateIssueACRequest) => api.createIssueAC(issueId, data),
+    onSuccess: () => invalidateIssueLedger(qc, issueId),
+  });
+}
+
+export function useUpdateAC(issueId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ acId, data }: { acId: string; data: UpdateIssueACRequest }) =>
+      api.updateIssueAC(issueId, acId, data),
+    onSuccess: () => invalidateIssueLedger(qc, issueId),
+  });
+}
+
+export function useVerifyAC(issueId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ acId, data }: { acId: string; data: VerifyIssueACRequest }) =>
+      api.verifyIssueAC(issueId, acId, data),
+    onSuccess: () => invalidateIssueLedger(qc, issueId),
+  });
+}
+
+export function useRejectAC(issueId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ acId, data }: { acId: string; data: RejectIssueACRequest }) =>
+      api.rejectIssueAC(issueId, acId, data),
+    onSuccess: () => invalidateIssueLedger(qc, issueId),
+  });
+}
+
+export function useDeleteAC(issueId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (acId: string) => api.deleteIssueAC(issueId, acId),
+    onSuccess: () => invalidateIssueLedger(qc, issueId),
+  });
+}
+
+export function useCreateTodo(issueId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (data: CreateIssueTodoRequest) => api.createIssueTodo(issueId, data),
+    onSuccess: () => invalidateIssueLedger(qc, issueId),
+  });
+}
+
+export function useUpdateTodo(issueId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ todoId, data }: { todoId: string; data: UpdateIssueTodoRequest }) =>
+      api.updateIssueTodo(issueId, todoId, data),
+    onSuccess: () => invalidateIssueLedger(qc, issueId),
+  });
+}
+
+export function useReopenTodo(issueId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ todoId, data }: { todoId: string; data?: ReopenIssueTodoRequest }) =>
+      api.reopenIssueTodo(issueId, todoId, data),
+    onSuccess: () => invalidateIssueLedger(qc, issueId),
+  });
+}
+
+export function useDeleteTodo(issueId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (todoId: string) => api.deleteIssueTodo(issueId, todoId),
+    onSuccess: () => invalidateIssueLedger(qc, issueId),
   });
 }
