@@ -231,12 +231,13 @@ func (c PatcherConfig) withDefaults() PatcherConfig {
 //     most one replica holds the installation lease at a time, the
 //     event bus is per-process, so exactly one Patcher reacts per run.
 type Patcher struct {
-	queries         PatcherQueries
-	credentials     CredentialsResolver
-	client          APIClient
-	typingIndicator *TypingIndicatorManager
-	progress        *progressCards
-	cfg             PatcherConfig
+	queries            PatcherQueries
+	credentials        CredentialsResolver
+	client             APIClient
+	typingIndicator    *TypingIndicatorManager
+	progress           *progressCards
+	terminalSummarizer TerminalSummarizer
+	cfg                PatcherConfig
 
 	// objects is nil unless WithAttachments wired object storage, and nil is
 	// what turns file delivery off — the same condition the router uses to
@@ -404,7 +405,7 @@ func (p *Patcher) processEvent(ctx context.Context, e events.Event) error {
 		// A cancelled run leaves a running progress card on screen with nothing
 		// behind it, so its last frame is the one that says so. No-op when the
 		// run never produced a card.
-		p.progress.finalizeLater(taskID, chatSessionID, ProgressStateCancelled)
+		p.progress.finalizeLater(taskID, chatSessionID, ProgressStateCancelled, "")
 		return nil
 	}
 
@@ -441,11 +442,11 @@ func (p *Patcher) processEvent(ctx context.Context, e events.Event) error {
 		if p.mayCarryAttachments(e) {
 			p.deliverAttachments(e, attachmentTarget{Creds: target.creds, Binding: target.binding})
 		}
-		p.progress.finalizeLater(taskID, chatSessionID, ProgressStateCompleted)
+		p.progress.finalizeLater(taskID, chatSessionID, ProgressStateCompleted, chatDoneContent(e.Payload))
 		return replyErr
 	case protocol.EventTaskFailed:
 		failErr := p.fail(ctx, target.creds, target.binding, taskID, target.agentName, e.Payload)
-		p.progress.finalizeLater(taskID, chatSessionID, ProgressStateFailed)
+		p.progress.finalizeLater(taskID, chatSessionID, ProgressStateFailed, errorMessageFromPayload(e.Payload))
 		return failErr
 	}
 	return nil
