@@ -555,6 +555,16 @@ deleted_channel_chat_run_intents AS (
 deleted_issue_decisions AS (
     DELETE FROM issue_decisions WHERE workspace_id = $1
 ),
+-- RUYI-971: structured AC and dynamic TODO execution ledger.
+deleted_issue_acceptance_criteria AS (
+    DELETE FROM issue_acceptance_criteria WHERE workspace_id = $1
+),
+deleted_issue_todos AS (
+    DELETE FROM issue_todos WHERE workspace_id = $1
+),
+deleted_issue_task_state_audit AS (
+    DELETE FROM issue_task_state_audit WHERE workspace_id = $1
+),
 deleted_decision_requests AS (
     DELETE FROM decision_requests WHERE workspace_id = $1
 ),

@@ -1433,6 +1433,23 @@ type Issue struct {
 	SuspendedAt pgtype.Timestamptz `json:"suspended_at"`
 }
 
+type IssueAcceptanceCriterium struct {
+	ID              pgtype.UUID        `json:"id"`
+	WorkspaceID     pgtype.UUID        `json:"workspace_id"`
+	IssueID         pgtype.UUID        `json:"issue_id"`
+	Key             string             `json:"key"`
+	Title           string             `json:"title"`
+	Status          string             `json:"status"`
+	Evidence        []byte             `json:"evidence"`
+	RejectionReason string             `json:"rejection_reason"`
+	VerifiedAt      pgtype.Timestamptz `json:"verified_at"`
+	VerifiedByType  pgtype.Text        `json:"verified_by_type"`
+	VerifiedByID    pgtype.UUID        `json:"verified_by_id"`
+	Position        int32              `json:"position"`
+	CreatedAt       pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt       pgtype.Timestamptz `json:"updated_at"`
+}
+
 type IssueDecision struct {
 	ID                    pgtype.UUID        `json:"id"`
 	WorkspaceID           pgtype.UUID        `json:"workspace_id"`
@@ -1619,6 +1636,39 @@ type IssueSuspension struct {
 type IssueToLabel struct {
 	IssueID pgtype.UUID `json:"issue_id"`
 	LabelID pgtype.UUID `json:"label_id"`
+}
+
+type IssueTaskStateAudit struct {
+	ID          pgtype.UUID        `json:"id"`
+	WorkspaceID pgtype.UUID        `json:"workspace_id"`
+	IssueID     pgtype.UUID        `json:"issue_id"`
+	TargetType  string             `json:"target_type"`
+	TargetID    pgtype.UUID        `json:"target_id"`
+	Action      string             `json:"action"`
+	FromStatus  string             `json:"from_status"`
+	ToStatus    string             `json:"to_status"`
+	ActorType   string             `json:"actor_type"`
+	ActorID     pgtype.UUID        `json:"actor_id"`
+	Evidence    []byte             `json:"evidence"`
+	Note        string             `json:"note"`
+	CreatedAt   pgtype.Timestamptz `json:"created_at"`
+}
+
+type IssueTodo struct {
+	ID            pgtype.UUID        `json:"id"`
+	WorkspaceID   pgtype.UUID        `json:"workspace_id"`
+	IssueID       pgtype.UUID        `json:"issue_id"`
+	Title         string             `json:"title"`
+	Status        string             `json:"status"`
+	NextStep      string             `json:"next_step"`
+	BlockedReason string             `json:"blocked_reason"`
+	AssigneeType  pgtype.Text        `json:"assignee_type"`
+	AssigneeID    pgtype.UUID        `json:"assignee_id"`
+	AcIds         []byte             `json:"ac_ids"`
+	Evidence      []byte             `json:"evidence"`
+	Position      int32              `json:"position"`
+	CreatedAt     pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt     pgtype.Timestamptz `json:"updated_at"`
 }
 
 type IssueVcsPullRequest struct {

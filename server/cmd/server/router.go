@@ -2785,6 +2785,31 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Get("/attachments", h.ListAttachments)
 					r.Get("/children", h.ListChildIssues)
 					r.Get("/relations", h.GetIssueRelations)
+
+					// RUYI-971: structured AC and dynamic TODO execution ledger.
+					r.Route("/ac", func(r chi.Router) {
+						r.Get("/", h.ListIssueACs)
+						r.Post("/", h.CreateIssueAC)
+						r.Post("/extract", h.ExtractIssueACs)
+						r.Route("/{acId}", func(r chi.Router) {
+							r.Get("/", h.GetIssueAC)
+							r.Patch("/", h.UpdateIssueAC)
+							r.Post("/verify", h.VerifyIssueAC)
+							r.Post("/reject", h.RejectIssueAC)
+							r.Delete("/", h.DeleteIssueAC)
+						})
+					})
+					r.Route("/todos", func(r chi.Router) {
+						r.Get("/", h.ListIssueTodos)
+						r.Post("/", h.CreateIssueTodo)
+						r.Route("/{todoId}", func(r chi.Router) {
+							r.Get("/", h.GetIssueTodo)
+							r.Patch("/", h.UpdateIssueTodo)
+							r.Post("/reopen", h.ReopenIssueTodo)
+							r.Delete("/", h.DeleteIssueTodo)
+						})
+					})
+					r.Get("/ledger", h.GetIssueLedger)
 					r.Post("/relations", h.AddIssueRelation)
 					r.Delete("/relations/{relType}/{targetId}", h.RemoveIssueRelation)
 					r.Get("/labels", h.ListLabelsForIssue)
